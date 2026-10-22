@@ -15,3 +15,5 @@ backend/logs/
 *.pyc
 *.tsbuildinfo
 web-dev.log
+web-dev.pid
+backend/logs/*.pid
