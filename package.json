@@ -1,0 +1,13 @@
+{
+  "name": "novel",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["web"],
+  "scripts": {
+    "dev": "concurrently -n backend,web -c blue,magenta \"npm run dev:backend\" \"npm run dev:web\"",
+    "dev:backend": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8004 --reload-exclude logs --reload-exclude novel.db --reload-delay 1",
+    "dev:web": "cd web && npm run dev",
+    "build": "cd web && npm run build"
+  },
+  "devDependencies": {"concurrently": "^9.0.0"}
+}

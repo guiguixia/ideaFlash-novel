@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+node_modules/
+web/node_modules/
+web/dist/
+web/.vite/
+backend/.venv/
+backend/__pycache__/
+backend/tests/__pycache__/
+backend/novel.db
+backend/*.db-*
+backend/data/
+backend/logs/
+*.pyc
+*.tsbuildinfo
+web-dev.log

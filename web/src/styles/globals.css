@@ -1,0 +1,407 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "MiSans";
+  src: url("../assets/fonts/misans/MiSansVF.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 150 700;
+}
+
+.experience-panel > div:first-child {
+  grid-column: 1;
+  position: sticky;
+  top: 0;
+}
+
+.experience-panel > div:not(:first-child) {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.experience-panel > div:nth-child(3) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.experience-panel.enter-mode > div:first-child {
+  display: none;
+}
+
+.experience-panel.enter-mode > div:nth-child(2) {
+  display: none;
+}
+
+.experience-panel.enter-mode {
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+.experience-panel.enter-mode > div:not(:first-child) {
+  grid-column: 2;
+}
+
+.experience-panel.enter-mode > div:nth-child(3) {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.experience-panel.enter-mode > div:nth-child(4) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.experience-panel.enter-mode .flex.flex-wrap {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.experience-panel button.border-black {
+  border-color: #000 !important;
+  border-width: 2px !important;
+}
+
+/* ============================================================
+   Novel Design System
+   Source of truth: docs/design.md
+   ============================================================ */
+
+@theme {
+  --font-sans: MiSans, "MiSans VF", "MiSans Latin", Inter, -apple-system,
+    BlinkMacSystemFont, "Segoe UI Variable", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", "Cascadia Mono",
+    "JetBrains Mono", monospace;
+
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --text-4xl: 36px;
+
+  --leading-tight: 1.25;
+  --leading-body: 1.6;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-row: 10px;
+  --radius-xl: 12px;
+  --radius-panel: 14px;
+  --radius-bubble: 16px;
+  --radius-workspace: 18px;
+  --radius-modal: 22px;
+  --radius-note: 26px;
+  --radius-hero: 30px;
+  --radius-full: 999px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-canvas: var(--background);
+  --color-workspace: var(--workspace);
+  --color-surface: var(--surface);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--foreground);
+  --color-floating: var(--floating);
+  --color-glass: var(--glass);
+  --color-glass-aside: var(--glass-aside);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-text-selection: var(--text-selection);
+  --color-foreground: var(--foreground);
+  --color-body-foreground: var(--body-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-hint-foreground: var(--hint-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-border: var(--brand-border);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--hover);
+  --color-accent: var(--active);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-system-blue: var(--system-blue);
+}
+
+@custom-variant dark (&:is([data-theme="dark"] *));
+
+/*
+ * 平台感知顶栏预留（main.tsx 把主进程平台写到 <html data-platform>）：
+ * - darwin：左上角红绿灯按钮区，顶栏左内容需让位（约 112px，与 trafficLightPosition x:18 匹配）
+ * - win32：右上角系统 caption 按钮（最小化/最大化/关闭）。
+ *   注意 150px 是 100% 缩放下的回退值；main.tsx 会用 Window Controls Overlay API
+ *   实测 caption 宽度写内联变量覆盖它（125%/150% 缩放下按钮更宽，硬编码会漏）。
+ * 其余平台无自绘按钮，两侧均为 0。顶栏组件用 pl/pr-[var(--titlebar-inset-left/right)] 消费。
+ *
+ * 上下分区（win32 专属，2026-08-16 方案 A）：caption 按钮与内容分带——舞台卡片顶部
+ * padding 消费 --titlebar-gutter-top，卡片从 caption 带下方开始，caption 悬于 canvas
+ * gutter 上（与 mac「红绿灯悬于侧边栏」的视觉语言对等）。侧边栏/左栏保持通顶。
+ * 取值 56px = TITLE_BAR_HEIGHT（window.ts 的 titleBarOverlay.height）。
+ */
+:root {
+  --titlebar-inset-left: 0px;
+  --titlebar-inset-right: 0px;
+  --titlebar-gutter-top: 0px;
+}
+
+[data-platform="darwin"] {
+  --titlebar-inset-left: 112px;
+}
+
+[data-platform="win32"] {
+  --titlebar-inset-right: 150px;
+  --titlebar-gutter-top: 56px;
+}
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --background: #f4f4f5;
+  --workspace: #ffffff;
+  --surface: #ffffff;
+  --floating: oklch(1 0 0 / 72%);
+  --glass: oklch(1 0 0 / 70%);
+  --glass-aside: oklch(1 0 0 / 20%);
+  --popover: #ffffff;
+  --border: oklch(0 0 0 / 7%);
+  --border-strong: oklch(0 0 0 / 12%);
+  --input: oklch(0 0 0 / 8%);
+  --hover: oklch(0 0 0 / 3.5%);
+  --active: oklch(0 0 0 / 5.5%);
+  --text-selection: oklch(0.86 0.06 250 / 64%);
+  --foreground: oklch(0.141 0.005 285.823);
+  --body-foreground: oklch(0.37 0.013 285.805);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --hint-foreground: oklch(0.705 0.015 286.067);
+  --primary: var(--foreground);
+  --primary-hover: oklch(0.274 0.006 286.033);
+  --primary-foreground: oklch(0.985 0 0);
+  --brand: #04c853;
+  --brand-foreground: #03130a;
+  --brand-soft: color-mix(in oklch, var(--brand) 10%, transparent);
+  --brand-border: color-mix(in oklch, var(--brand) 24%, transparent);
+  --secondary: var(--active);
+  --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.55 0.16 145);
+  --warning: oklch(0.72 0.15 85);
+  --info: oklch(0.55 0.08 250);
+  --system-blue: #007aff;
+  --ring: oklch(0.552 0.016 285.938);
+  --shadow-workspace: 0 18px 48px oklch(0 0 0 / 7%);
+  --shadow-floating: 0 18px 48px oklch(0 0 0 / 8%);
+  --shadow-floating-strong: 0 28px 72px oklch(0 0 0 / 18%), 0 8px 20px oklch(0 0 0 / 10%);
+  --shadow-selection-toolbar: 0 10px 22px oklch(0 0 0 / 14%), 0 2px 8px oklch(0 0 0 / 9%);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: oklch(0.18 0.005 285.823);
+  --workspace: oklch(0.21 0.006 285.885);
+  --surface: var(--workspace);
+  --floating: oklch(1 0 0 / 6%);
+  --glass: oklch(1 0 0 / 6%);
+  --glass-aside: oklch(1 0 0 / 8%);
+  --popover: oklch(0.24 0.006 285.885);
+  --border: oklch(1 0 0 / 10%);
+  --border-strong: oklch(1 0 0 / 16%);
+  --input: oklch(1 0 0 / 12%);
+  --hover: oklch(1 0 0 / 7%);
+  --active: oklch(1 0 0 / 10%);
+  --text-selection: oklch(0.64 0.12 250 / 46%);
+  --foreground: oklch(0.985 0 0);
+  --body-foreground: oklch(0.9 0.004 285.823);
+  --muted-foreground: oklch(0.705 0.015 286.067);
+  --hint-foreground: oklch(0.552 0.016 285.938);
+  --primary: var(--foreground);
+  --primary-hover: oklch(0.87 0.006 286.286);
+  --primary-foreground: oklch(0.141 0.005 285.823);
+  --brand: #04c853;
+  --brand-foreground: #03130a;
+  --brand-soft: color-mix(in oklch, var(--brand) 12%, transparent);
+  --brand-border: color-mix(in oklch, var(--brand) 28%, transparent);
+  --secondary: var(--active);
+  --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.72 0.14 145);
+  --warning: oklch(0.82 0.14 85);
+  --info: oklch(0.72 0.1 250);
+  --system-blue: #0a84ff;
+  --ring: oklch(0.705 0.015 286.067);
+  --shadow-workspace: 0 18px 48px oklch(0 0 0 / 24%);
+  --shadow-floating: 0 22px 56px oklch(0 0 0 / 34%);
+  --shadow-floating-strong: 0 30px 80px oklch(0 0 0 / 52%), 0 10px 26px oklch(0 0 0 / 32%);
+  --shadow-selection-toolbar: 0 14px 30px oklch(0 0 0 / 42%), 0 2px 10px oklch(0 0 0 / 24%);
+}
+
+@keyframes slide-up-fade {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  html {
+    background: var(--background);
+  }
+
+  body {
+    background:
+      radial-gradient(circle at 50% -12%, color-mix(in oklch, var(--workspace) 58%, transparent) 0, transparent 44%),
+      var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--leading-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    border-color: var(--border);
+    scrollbar-color: var(--border) transparent;
+    scrollbar-width: thin;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    min-height: 32px;
+    border: 3px solid transparent;
+    border-radius: var(--radius-full);
+    background-color: var(--border);
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--border-strong);
+  }
+
+  ::selection {
+    background: var(--text-selection);
+    color: var(--foreground);
+  }
+
+  button,
+  a,
+  input,
+  textarea,
+  select,
+  [role="button"] {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer utilities {
+  .animate-slide-up-fade {
+    animation: slide-up-fade 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-agent-profile-enter {
+    animation: slide-up-fade 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-agent-profile-enter {
+      animation: none;
+    }
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .glass-surface {
+    background: var(--floating);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-floating);
+    backdrop-filter: blur(24px);
+  }
+
+  .solid-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+}
+
+/* 填写提示仅绑定创作规划中的专属引导文案，避免影响其他表单。 */
+@layer components {
+  label:has(input[inputmode='numeric'])::before,
+  label:has(textarea[placeholder*='持续提供的爽点'])::before,
+  label:has(textarea[placeholder*='主动调查、承担风险'])::before,
+  label:has(textarea[placeholder*='主角从什么处境出发'])::before {
+    content: '必填';
+    display: inline-block;
+    margin-right: 0.375rem;
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--destructive) 12%, transparent);
+    padding: 0.125rem 0.375rem;
+    color: var(--destructive);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    vertical-align: middle;
+  }
+
+  label:has(input[placeholder*='热血升级流'])::before,
+  label:has(textarea[placeholder*='喜欢成长逆袭'])::before,
+  label:has(textarea[placeholder*='被逐出家门'])::before,
+  label:has(textarea[placeholder*='主角目标与最主要阻力'])::before,
+  label:has(textarea[placeholder*='能辨认失传符文'])::before,
+  label:has(textarea[placeholder*='关键资源、身份认可'])::before,
+  label:has(textarea[placeholder*='独家能力不能无条件'])::before,
+  label:has(textarea[placeholder*='最终要解决的核心矛盾'])::before,
+  label:has(textarea[placeholder*='终极敌人的真实身份'])::before,
+  label:has(textarea[placeholder*='外门试炼'])::before,
+  label:has(textarea[placeholder*='压抑开局'])::before,
+  label:has(textarea[placeholder*='贯穿全书'])::before,
+  label:has(input[placeholder*='第 1–80 章'])::before,
+  label:has(input[placeholder*='紧张、期待、爽感'])::before {
+    content: '可选';
+    display: inline-block;
+    margin-right: 0.375rem;
+    border-radius: 9999px;
+    background: var(--active);
+    padding: 0.125rem 0.375rem;
+    color: var(--muted-foreground);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    vertical-align: middle;
+  }
+}
