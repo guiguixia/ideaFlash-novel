@@ -14,13 +14,13 @@ cd .. && npm run dev
 也可以使用一键更新并重启脚本：
 
 ```bash
-bash tmp/restart.sh
+bash script/restart.sh
 ```
 
 脚本会拉取当前分支最新代码、安装前后端依赖、停止旧进程并启动 API 与 Web。跳过拉取或依赖安装：
 
 ```bash
-NOVEL_SKIP_PULL=1 NOVEL_SKIP_INSTALL=1 bash tmp/restart.sh
+NOVEL_SKIP_PULL=1 NOVEL_SKIP_INSTALL=1 bash script/restart.sh
 ```
 
 - Web：<http://127.0.0.1:5179>
