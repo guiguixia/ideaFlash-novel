@@ -12,8 +12,8 @@ from trace import logger
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 LOCAL_USER_ID = "local-admin"
-ADMIN_USERNAME = os.getenv("NOVEL_ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("NOVEL_ADMIN_PASSWORD", "change-me")
+ADMIN_USERNAME = "ideaFlash"
+ADMIN_PASSWORD = "ideaFlash"
 JWT_SECRET = os.getenv("NOVEL_JWT_SECRET") or os.getenv("JWT_SECRET") or "dev-secret-change-in-production"
 
 

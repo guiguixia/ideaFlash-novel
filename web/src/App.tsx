@@ -323,8 +323,8 @@ function Unavailable({ title, description }: { title: string; description: strin
 }
 
 function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('')
+  const [username, setUsername] = useState('ideaFlash')
+  const [password, setPassword] = useState('ideaFlash')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
 

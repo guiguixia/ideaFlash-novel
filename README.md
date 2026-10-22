@@ -14,11 +14,9 @@ cd .. && npm run dev
 - Web：<http://127.0.0.1:5179>
 - API：<http://127.0.0.1:8004/docs>
 
-`.env` 至少配置本地管理员和一个 OpenAI 兼容的 LLM：
+`.env` 至少配置一个 OpenAI 兼容的 LLM；本地管理员账号固定为 `ideaFlash / ideaFlash`：
 
 ```env
-NOVEL_ADMIN_USERNAME=admin
-NOVEL_ADMIN_PASSWORD=change-me
 NOVEL_JWT_SECRET=change-this-secret
 NOVEL_LLM_BASE_URL=https://api.openai.com/v1
 NOVEL_LLM_API_KEY=your-api-key
