@@ -18,7 +18,7 @@ stop_port() {
   echo "停止端口 $port：$pids"
   kill $pids 2>/dev/null || true
   for _ in {1..10}; do
-    lsof -nP -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || return
+    lsof -nP -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || return 0
     sleep 1
   done
   pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"

@@ -2,12 +2,29 @@
   "name": "novel",
   "version": "0.1.0",
   "private": true,
+  "main": "desktop/main.cjs",
+  "productName": "IdeaFlash Story",
   "workspaces": ["web"],
   "scripts": {
     "dev": "concurrently -n backend,web -c blue,magenta \"npm run dev:backend\" \"npm run dev:web\"",
     "dev:backend": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8004 --reload-exclude logs --reload-exclude novel.db --reload-delay 1",
     "dev:web": "cd web && npm run dev",
-    "build": "cd web && npm run build"
+    "build": "cd web && npm run build",
+    "desktop:dev": "concurrently -k -n web,electron -c magenta,cyan \"npm run dev:web\" \"wait-on http://127.0.0.1:5179 && ELECTRON_START_URL=http://127.0.0.1:5179 electron .\"",
+    "desktop:backend": "bash script/build-desktop-backend.sh",
+    "desktop:make": "npm run build && npm run desktop:backend && electron-forge make"
   },
-  "devDependencies": {"concurrently": "^9.0.0"}
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.1",
+    "@electron-forge/maker-dmg": "^7.11.1",
+    "@electron-forge/maker-squirrel": "^7.11.1",
+    "@electron-forge/maker-zip": "^7.11.1",
+    "concurrently": "^9.0.0",
+    "electron": "^40.0.0",
+    "wait-on": "^8.0.3"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1",
+    "update-electron-app": "^3.1.0"
+  }
 }

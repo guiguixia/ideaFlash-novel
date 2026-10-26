@@ -11,9 +11,12 @@ backend/tests/__pycache__/
 backend/novel.db
 backend/*.db-*
 backend/data/
+data/tmp/
 backend/logs/
 *.pyc
 *.tsbuildinfo
 web-dev.log
 web-dev.pid
 backend/logs/*.pid
+desktop/bin/
+out/

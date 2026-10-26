@@ -23,6 +23,6 @@
   },
   // 当前浏览器版仅编译已接入 Novel REST 后端的入口。new_novel 原有的
   // Electron/RPC 页面仍作为后续适配参考，不能让其未接入的桌面类型阻断 Web 构建。
-  "include": ["src/App.tsx", "src/main.tsx", "src/lib/kernel-api.ts", "src/lib/auth-session.ts", "src/lib/chapter-view.ts", "vite.config.ts"],
+  "include": ["src/App.tsx", "src/LibraryHome.tsx", "src/RuntimeWorkbench.tsx", "src/SourceMaterialPanel.tsx", "src/main.tsx", "src/lib/kernel-api.ts", "src/lib/auth-session.ts", "vite.config.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"]
 }

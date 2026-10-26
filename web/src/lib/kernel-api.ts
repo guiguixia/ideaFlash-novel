@@ -8,9 +8,12 @@ type KernelEnvelope<T> = {
   list?: T
 }
 
+const desktopApiBase = window.location.protocol === 'file:' ? 'http://127.0.0.1:8004' : ''
+const apiUrl = (path: string): string => desktopApiBase ? new URL(path, desktopApiBase).toString() : path
+
 async function kernelRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers: {
       ...(isForm ? {} : { 'Content-Type': 'application/json' }),
@@ -75,4 +78,27 @@ export function kernelDelete<T>(path: string): Promise<T> {
 
 export function kernelUpload<T>(path: string, form: FormData): Promise<T> {
   return kernelRequest<T>(path, { method: 'POST', body: form })
+}
+
+export async function kernelStreamPost<T>(path: string, body: unknown, onChunk: (content: string) => void): Promise<T> {
+  const response = await fetch(apiUrl(path), { method: 'POST', body: JSON.stringify(body), headers: authHeaders({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }) })
+  if (!response.ok || !response.body) throw new Error(`请求失败（HTTP ${response.status}）`)
+  const reader = response.body.getReader(), decoder = new TextDecoder()
+  let buffer = '', done: T | null = null
+  while (true) {
+    const { value, done: finished } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !finished })
+    const events = buffer.split('\n\n'); buffer = events.pop() || ''
+    for (const raw of events) {
+      const event = raw.match(/^event:\s*(.+)$/m)?.[1] || 'message', data = raw.match(/^data:\s*(.+)$/m)?.[1]
+      if (!data) continue
+      const payload = JSON.parse(data) as { content?: string; message?: string; session?: T }
+      if (event === 'chunk' && payload.content) onChunk(payload.content)
+      if (event === 'error') throw new Error(payload.message || '流式生成失败')
+      if (event === 'done') done = (payload.session || payload) as T
+    }
+    if (finished) break
+  }
+  if (!done) throw new Error('流式生成未返回完成结果')
+  return done
 }

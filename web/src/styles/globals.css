@@ -1,5 +1,65 @@
 @import "tailwindcss";
 
+/* 我的作品的空状态：让留白承担首次行动引导。 */
+p.mt-12.text-center.text-sm.text-muted-foreground {
+  position: relative;
+  max-width: 720px;
+  margin: 5rem auto 0;
+  padding: 7rem 2.5rem 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-modal);
+  background:
+    radial-gradient(circle at 50% -20%, color-mix(in oklab, var(--brand-soft) 82%, transparent), transparent 48%),
+    var(--workspace);
+  box-shadow: var(--shadow-workspace);
+  color: var(--body-foreground);
+  font-size: 14px;
+}
+
+p.mt-12.text-center.text-sm.text-muted-foreground::before {
+  content: "从一扇门开始";
+  position: absolute;
+  top: 2.5rem;
+  left: 0;
+  right: 0;
+  color: var(--foreground);
+  font-size: 22px;
+  font-weight: 650;
+}
+
+p.mt-12.text-center.text-sm.text-muted-foreground::after {
+  content: "创建原创故事  ·  导入小说  ·  导入影视资料\A所有作品和体验均仅自己可见";
+  white-space: pre-line;
+  display: block;
+  margin-top: 1.4rem;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+/* 导入作品：原生文件控件需要成为清晰的主操作，而不是一行容易忽略的文字。 */
+#source-file {
+  width: 100%;
+  min-height: 92px;
+  padding: 12px;
+  border: 1px dashed var(--brand-border);
+  border-radius: var(--radius-xl);
+  background: var(--brand-soft);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+#source-file::file-selector-button {
+  margin-right: 12px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--foreground);
+  color: var(--primary-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
 @font-face {
   font-family: "MiSans";
   src: url("../assets/fonts/misans/MiSansVF.woff2") format("woff2");
@@ -8,63 +68,7 @@
   font-weight: 150 700;
 }
 
-.experience-panel > div:first-child {
-  grid-column: 1;
-  position: sticky;
-  top: 0;
-}
-
-.experience-panel > div:not(:first-child) {
-  grid-column: 2;
-  min-width: 0;
-}
-
-.experience-panel > div:nth-child(3) {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.experience-panel.enter-mode > div:first-child {
-  display: none;
-}
-
-.experience-panel.enter-mode > div:nth-child(2) {
-  display: none;
-}
-
-.experience-panel.enter-mode {
-  grid-template-columns: 280px minmax(0, 1fr);
-}
-
-.experience-panel.enter-mode > div:not(:first-child) {
-  grid-column: 2;
-}
-
-.experience-panel.enter-mode > div:nth-child(3) {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.experience-panel.enter-mode > div:nth-child(4) {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.experience-panel.enter-mode .flex.flex-wrap {
-  flex-direction: column;
-  flex-wrap: nowrap;
-  align-items: stretch;
-}
-
-.experience-panel button.border-black {
-  border-color: #000 !important;
-  border-width: 2px !important;
-}
-
-/* ============================================================
-   Novel Design System
-   Source of truth: docs/design.md
-   ============================================================ */
+/* Design system source of truth: repository root DESIGN.md */
 
 @theme {
   --font-sans: MiSans, "MiSans VF", "MiSans Latin", Inter, -apple-system,

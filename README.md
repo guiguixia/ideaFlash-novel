@@ -1,6 +1,10 @@
-# ideaFlash Novel
+# ideaFlash Story
 
-独立运行的 AI 小说写作与剧本体验工作台。仓库不依赖共享平台或内核服务。
+私有互动故事创作与体验平台。
+
+用户可以创建原创故事，或导入小说、影视文本资料；它们都会进入统一的作品工作台。导入小说可选择连续章节生成体验副本，原创故事可从开局设定生成体验版本。所有作品、体验副本和会话均仅本人可访问。
+
+产品交互与术语以 [DESIGN.md](DESIGN.md) 为准。
 
 ## 本地开发
 
@@ -11,13 +15,7 @@ cd backend && python3.11 -m venv .venv && .venv/bin/pip install -r requirements.
 cd .. && npm run dev
 ```
 
-也可以使用一键更新并重启脚本：
-
-```bash
-bash script/restart.sh
-```
-
-脚本会拉取当前分支最新代码、安装前后端依赖、停止旧进程并启动 API 与 Web。跳过拉取或依赖安装：
+也可以使用：
 
 ```bash
 NOVEL_SKIP_PULL=1 NOVEL_SKIP_INSTALL=1 bash script/restart.sh
@@ -26,29 +24,52 @@ NOVEL_SKIP_PULL=1 NOVEL_SKIP_INSTALL=1 bash script/restart.sh
 - Web：<http://127.0.0.1:5179>
 - API：<http://127.0.0.1:8004/docs>
 
-`.env` 至少配置一个 OpenAI 兼容的 LLM；本地管理员账号固定为 `ideaFlash / ideaFlash`：
+本地管理员账号：`ideaFlash / ideaFlash`。登录后可在设置中填写 OpenAI 兼容服务地址、模型和 API Key；配置仅保存在本机数据库中。
 
-```env
-NOVEL_JWT_SECRET=change-this-secret
-NOVEL_LLM_BASE_URL=https://api.openai.com/v1
-NOVEL_LLM_API_KEY=your-api-key
-NOVEL_LLM_MODEL=gpt-4o-mini
-```
+## 数据迁移
 
-剧本对话可使用 `NOVEL_LLM_SCRIPT_*` 覆盖通用 LLM 配置。数据库默认写入 `backend/novel.db`，工件默认写入 `backend/data/`；可分别使用 `NOVEL_DATABASE_URL` 和 `NOVEL_DATA_DIR` 覆盖。
+本版本会在首次启动时清理旧小说工作台、章节生产、扫榜和参考作品相关的数据表，然后创建新的作品、来源片段、体验副本和体验会话表。旧数据不保留。
 
-## 功能
+## 桌面应用
 
-- 新建小说并生成、审校、采纳章节
-- 导入 `.txt`、`.md`、`.zip` 剧本并抽取人物、关系和记忆
-- 副本快照、角色卡和角色临时对话
-- 本地单管理员登录
+项目已支持封装为 Electron 桌面应用。安装包内包含前端与 FastAPI 本地服务，最终用户无需安装 Node.js 或 Python；作品、体验记录和模型配置仍只存放在本机。
 
-## 测试
+### 桌面开发
+
+完成本地开发环境准备后，执行：
 
 ```bash
-cd backend
-pytest -q
+npm run desktop:dev
 ```
 
-本仓库不提交 `.env`、数据库、日志、虚拟环境和前端构建产物。
+Electron 会自动启动本地 API 服务，同时加载 Vite 开发页面。
+
+### 构建安装包
+
+```bash
+npm run desktop:make
+```
+
+该命令依次构建前端、使用 PyInstaller 编译 FastAPI sidecar，并使用 Electron Forge 生成当前系统的分发包：
+
+- macOS：`out/make/*.dmg`（首次安装）和 `out/make/zip/**/*.zip`（自动更新）。
+- Windows：`Setup.exe`、`.nupkg` 和 `RELEASES`。
+
+桌面版数据库位于系统用户数据目录，升级安装包不会覆盖现有数据：
+
+- macOS：`~/Library/Application Support/IdeaFlash Story/novel.db`
+- Windows：`%APPDATA%/IdeaFlash Story/novel.db`
+
+### 自动更新
+
+默认不启用自动更新，适合本地测试或手动分发。需要对外发布时：
+
+1. 准备 HTTPS 对象存储或 CDN 作为更新源。
+2. 在 [desktop/update-config.json](desktop/update-config.json) 设置 `baseUrl`。
+3. 用同一更新根地址构建并上传更新产物：
+
+   ```bash
+   NOVEL_UPDATE_BASE_URL=https://updates.example.com/ideaflash-story npm run desktop:make
+   ```
+
+正式自动更新需要 macOS Developer ID 签名与公证；Windows 也建议配置代码签名证书。完整发布目录、版本迁移与回滚规则请见 [桌面应用与自动更新文档](docs/desktop-distribution.md)。
