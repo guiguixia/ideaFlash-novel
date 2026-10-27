@@ -11,7 +11,8 @@ backend/tests/__pycache__/
 backend/novel.db
 backend/*.db-*
 backend/data/
-data/tmp/
+data/
+.idea/
 backend/logs/
 *.pyc
 *.tsbuildinfo

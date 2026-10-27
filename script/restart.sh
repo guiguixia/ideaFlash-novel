@@ -13,15 +13,15 @@ export no_proxy="$NO_PROXY"
 stop_port() {
   local port="$1"
   local pids
-  pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  pids="$(lsof -nP -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
   [[ -z "$pids" ]] && return
-  echo "停止端口 $port：$pids"
+  echo "停止端口 ${port}：${pids}"
   kill $pids 2>/dev/null || true
   for _ in {1..10}; do
-    lsof -nP -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || return 0
+    lsof -nP -tiTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1 || return 0
     sleep 1
   done
-  pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  pids="$(lsof -nP -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
   [[ -n "$pids" ]] && kill -KILL $pids 2>/dev/null || true
 }
 

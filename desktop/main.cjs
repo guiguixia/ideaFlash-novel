@@ -4,6 +4,8 @@ const fs = require('node:fs')
 const http = require('node:http')
 const { spawn } = require('node:child_process')
 
+const APP_NAME = 'IdeaFlash Story'
+
 if (require('electron-squirrel-startup')) app.quit()
 
 const API_PORT = 8004
@@ -76,6 +78,7 @@ async function createWindow() {
   startBackend()
   await waitForApi()
   const window = new BrowserWindow({
+    title: APP_NAME,
     width: 1440,
     height: 920,
     minWidth: 1080,
@@ -93,7 +96,7 @@ app.whenReady().then(async () => {
     await createWindow()
     setupAutoUpdate()
   } catch (error) {
-    dialog.showErrorBox('IdeaFlash Story 无法启动', error instanceof Error ? error.message : String(error))
+    dialog.showErrorBox(`${APP_NAME} 无法启动`, error instanceof Error ? error.message : String(error))
     app.quit()
   }
 })

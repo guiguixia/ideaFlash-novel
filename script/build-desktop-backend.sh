@@ -6,6 +6,7 @@ PYTHON_BIN="${NOVEL_PYTHON_BIN:-$ROOT/backend/.venv/bin/python}"
 OUTPUT_DIR="$ROOT/desktop/bin"
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
+export PYINSTALLER_CONFIG_DIR="$TEMP_DIR/pyinstaller-config"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "未找到 Python 虚拟环境：$PYTHON_BIN" >&2

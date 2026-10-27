@@ -6,4 +6,5 @@ class WorkCreateRequest(BaseModel):title:str=Field(min_length=1,max_length=160);
 class WorkUpdateRequest(WorkCreateRequest):pass
 class ExperienceScriptCreateRequest(BaseModel):title:str="";start_sequence:int=Field(default=0,ge=0);end_sequence:int=Field(default=0,ge=0);player_identity:str="";perspective:Literal["first","third"]="first"
 class ExperienceSessionCreateRequest(BaseModel):title:str="";player_identity:str=""
+class ExperienceSessionUpdateRequest(BaseModel):title:str=Field(min_length=1,max_length=160)
 class ExperienceTurnRequest(BaseModel):message:str=Field(min_length=1,max_length=4000)

@@ -37,3 +37,9 @@ def run_schema_migrations():
         exists=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 1").first()
         if not exists:
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (1, CURRENT_TIMESTAMP)")
+        extraction_cache=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 2").first()
+        if not extraction_cache:
+            columns={column["name"] for column in inspect(engine).get_columns("source_segments")}
+            if "experience_extraction" not in columns:
+                connection.exec_driver_sql("ALTER TABLE source_segments ADD COLUMN experience_extraction JSON")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (2, CURRENT_TIMESTAMP)")

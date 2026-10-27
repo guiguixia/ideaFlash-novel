@@ -7,21 +7,45 @@ from models import ExperienceScript,LLMConfig,SourceSegment,Work
 from prompts.experience import render_experience_snapshot_extraction_prompt
 from prompts.historical_question import render_historical_question_resolver_prompt
 from prompts.scenario_context import render_scenario_initial_context_analysis_prompt
+from trace import logger
+
 def _llm_client(config:LLMConfig):return AsyncOpenAI(api_key=config.api_key,base_url=config.base_url or None,http_client=httpx.AsyncClient(trust_env=False,timeout=httpx.Timeout(90)),max_retries=0)
-async def _narration_completion(config:LLMConfig,prompt:str,temperature:float):
+
+def _log_llm_request(stage:str,config:LLMConfig,prompt:str,temperature:float,stream:bool=False,response_format:str="text"):
+ logger.info("LLM_REQUEST_BEGIN\nstage: %s\nmodel: %s\nbase_url: %s\ntemperature: %s\nstream: %s\nresponse_format: %s\nprompt:\n%s\nLLM_REQUEST_END",stage,config.model,config.base_url,temperature,stream,response_format,prompt)
+
+def _log_llm_response(stage:str,config:LLMConfig,content:str):
+ logger.info("LLM_RESPONSE_BEGIN\nstage: %s\nmodel: %s\ncontent:\n%s\nLLM_RESPONSE_END",stage,config.model,content)
+
+async def _narration_completion(config:LLMConfig,prompt:str,temperature:float,stage:str):
  client=_llm_client(config)
  try:
+  _log_llm_request(stage,config,prompt,temperature)
   response=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature)
-  return (response.choices[0].message.content or "场景静待你的选择。").strip(),config.model
+  content=(response.choices[0].message.content or "场景静待你的选择。").strip()
+  _log_llm_response(stage,config,content)
+  return content,config.model
+ except Exception:
+  logger.exception("LLM_REQUEST_FAILED stage=%s model=%s",stage,config.model)
+  raise
  finally:await client.close()
-async def _narration_stream(config:LLMConfig,prompt:str,temperature:float):
+async def _narration_stream(config:LLMConfig,prompt:str,temperature:float,stage:str):
  client=_llm_client(config)
+ chunks=[]
  try:
+  _log_llm_request(stage,config,prompt,temperature,stream=True)
   response=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,stream=True)
   async for item in response:
    content=item.choices[0].delta.content if item.choices else ""
-   if content:yield content
- finally:await client.close()
+   if content:
+    chunks.append(content)
+    yield content
+ except Exception:
+  logger.exception("LLM_REQUEST_FAILED stage=%s model=%s",stage,config.model)
+  raise
+ finally:
+  if chunks:_log_llm_response(stage,config,"".join(chunks))
+  await client.close()
 def split_source_document(filename:str,content:bytes):
  if filename.lower().endswith(".zip"):
   with zipfile.ZipFile(io.BytesIO(content)) as z:return sum((split_source_document(n,z.read(n)) for n in z.namelist() if n.lower().endswith((".txt",".md"))),[])
@@ -30,24 +54,34 @@ def split_source_document(filename:str,content:bytes):
  return [(m.group(1)[:200],text[m.end():(marks[i+1].start() if i+1<len(marks) else len(text))].strip()) for i,m in enumerate(marks) if text[m.end():(marks[i+1].start() if i+1<len(marks) else len(text))].strip()]
 def snapshot(work:Work,segments:list[SourceSegment],player:str):
  s=work.settings or {};return {"kind":work.work_type,"playerIdentity":player or s.get("playerIdentity") or "一名进入故事的旅人","openingScene":s.get("openingScene","") ,"world":s.get("world","") ,"tone":s.get("tone","") ,"sourceRange":[{"sequence":x.sequence,"title":x.title} for x in segments],"sourceText":"\n\n".join(f"{x.title}\n{x.content}" for x in segments)[:30000]}
-async def _json_completion(db:Session,prompt:str,temperature:float=.1):
+async def _json_completion(db:Session,prompt:str,temperature:float=.1,stage:str="json_completion"):
  config=db.get(LLMConfig,1)
  if not config or not config.api_key:raise RuntimeError("未配置大模型 API Key，无法构建体验副本")
  if (config.base_url or "").rstrip("/").endswith("/chat/completions"):raise RuntimeError("大模型 Base URL 配置错误：请填写服务根地址，例如 https://api.deepseek.com 或 https://api.deepseek.com/v1，而不是 /chat/completions")
  client=_llm_client(config)
  try:
+  _log_llm_request(stage,config,prompt,temperature,response_format="json_object")
   result=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,response_format={"type":"json_object"})
   raw=(result.choices[0].message.content or "").strip()
+  _log_llm_response(stage,config,raw)
   if not raw:raise RuntimeError(f"大模型 {config.model} 未返回内容")
   data=json.loads(raw)
   if not isinstance(data,dict):raise RuntimeError(f"大模型 {config.model} 未返回 JSON 对象")
   return data
- except RuntimeError:raise
- except Exception as exc:raise RuntimeError(f"大模型调用失败（{config.model}）：{exc.__class__.__name__}: {exc}") from exc
+ except RuntimeError:
+  logger.exception("LLM_REQUEST_FAILED stage=%s model=%s",stage,config.model)
+  raise
+ except Exception as exc:
+  logger.exception("LLM_REQUEST_FAILED stage=%s model=%s",stage,config.model)
+  raise RuntimeError(f"大模型调用失败（{config.model}）：{exc.__class__.__name__}: {exc}") from exc
  finally:await client.close()
 async def extract_experience_chapter(db:Session,segment:SourceSegment):
+ cached=segment.experience_extraction if isinstance(segment.experience_extraction,dict) else {}
+ if cached:return {**cached,"sourceSegmentOrder":segment.sequence,"chapterTitle":segment.title}
  prompt=render_experience_snapshot_extraction_prompt(segment.content[:18000])
- data=await _json_completion(db,prompt)
+ data=await _json_completion(db,prompt,stage=f"experience_chapter_extraction:{segment.sequence}")
+ segment.experience_extraction=data
+ db.commit()
  return {**data,"sourceSegmentOrder":segment.sequence,"chapterTitle":segment.title}
 def _merge_named(rows:list[dict],key:str):
  merged={}
@@ -70,8 +104,16 @@ def experience_role_cards(snapshot:dict):
   cards.append({"name":str(row["name"]),"identity":str(attributes.get("identity") or attributes.get("身份") or ""),"affiliation":str(attributes.get("affiliation") or attributes.get("所属势力") or attributes.get("势力") or ""),"ability":str(attributes.get("ability") or attributes.get("能力") or attributes.get("实力") or attributes.get("修为") or ""),"appearance":str(row.get("appearance") or initial.get("appearance") or ""),"currentState":str(initial_attributes.get("currentState") or initial_attributes.get("current_state") or initial_attributes.get("当前状态") or ""),"attributes":attributes,"sourceSegmentOrders":row.get("sourceSegmentOrders") or [],"roleMode":"replacement"})
  return cards
 async def build_experience_snapshot(db:Session,work:Work,segments:list[SourceSegment],progress=None):
+ # 兼容缓存字段上线前已经成功生成的副本：首次再次使用时，把其章节结果回填到资料片段。
+ previous={}
+ for script in db.query(ExperienceScript).filter(ExperienceScript.work_id==work.id,ExperienceScript.status=="ready").order_by(ExperienceScript.created_at.desc()).all():
+  for chapter in (script.snapshot or {}).get("chapterExtractions") or []:
+   if isinstance(chapter,dict) and isinstance(chapter.get("sourceSegmentOrder"),int):previous.setdefault(chapter["sourceSegmentOrder"],chapter)
  chapters=[]
  for index,segment in enumerate(segments,1):
+  if not segment.experience_extraction and segment.sequence in previous:
+   segment.experience_extraction={key:value for key,value in previous[segment.sequence].items() if key not in {"sourceSegmentOrder","chapterTitle"}}
+   db.commit()
   chapters.append(await extract_experience_chapter(db,segment))
   if progress:await progress(index,"chapter_extraction")
  events=[{**item,"sourceSegmentOrder":row["sourceSegmentOrder"]} for row in chapters for item in row.get("events") or [] if isinstance(item,dict)]
@@ -79,7 +121,7 @@ async def build_experience_snapshot(db:Session,work:Work,segments:list[SourceSeg
  conflicts=[{**item,"sourceSegmentOrder":row["sourceSegmentOrder"]} for row in chapters for item in row.get("conflicts") or [] if isinstance(item,dict)]
  scenario_input={"startSourceSegment":segments[0].sequence,"endSourceSegment":segments[-1].sequence,"chapterExtractions":chapters,"extractedCharacters":_merge_named(chapters,"characters"),"factions":_merge_named(chapters,"factions"),"locations":_merge_named(chapters,"locations"),"entities":_merge_named(chapters,"entities"),"events":events,"relations":relations,"conflicts":conflicts}
  if progress:await progress(len(segments),"scenario_analysis")
- analysis=await _json_completion(db,render_scenario_initial_context_analysis_prompt(segments[0].sequence,segments[-1].sequence,json.dumps(scenario_input,ensure_ascii=False,separators=(",",":"))))
+ analysis=await _json_completion(db,render_scenario_initial_context_analysis_prompt(segments[0].sequence,segments[-1].sequence,json.dumps(scenario_input,ensure_ascii=False,separators=(",",":"))),stage=f"experience_scenario_analysis:{segments[0].sequence}-{segments[-1].sequence}")
  questions=analysis.get("historical_questions",[]) if isinstance(analysis.get("historical_questions"),list) else []
  resolved=[{**question,"status":"unresolved","accumulated_answer":"","remaining_need":"","evidence_chapters":[]} for question in questions[:8] if isinstance(question,dict) and question.get("id") and question.get("question")]
  history_rows=db.query(SourceSegment).filter(SourceSegment.work_id==work.id,SourceSegment.sequence<segments[0].sequence).order_by(SourceSegment.sequence.desc()).all()
@@ -87,7 +129,7 @@ async def build_experience_snapshot(db:Session,work:Work,segments:list[SourceSeg
  for row in history_rows:
   active=[question for question in resolved if question.get("status")!="resolved"]
   if not active:break
-  answer=await _json_completion(db,render_historical_question_resolver_prompt(json.dumps(active,ensure_ascii=False,separators=(",",":")),row.sequence,row.content[:18000]))
+  answer=await _json_completion(db,render_historical_question_resolver_prompt(json.dumps(active,ensure_ascii=False,separators=(",",":")),row.sequence,row.content[:18000]),stage=f"experience_historical_backtracking:{row.sequence}")
   by_id={str(item.get("id")):item for item in answer.get("question_results",[]) if isinstance(item,dict)}
   for question in active:
    item=by_id.get(str(question["id"]))
@@ -106,16 +148,19 @@ async def extract_character_names(db:Session,segments:list[SourceSegment]):
  text="\n\n".join(f"{x.title}\n{x.content}" for x in segments)[:40000];config=db.get(LLMConfig,1)
  if config and config.api_key:
   prompt="从以下小说或影视资料中抽取适合作为玩家身份的已命名角色。仅返回 JSON 字符串数组，例如 [\"萧炎\",\"药老\"]；最多 20 个；不含旁白、路人、你、我、他等泛称，也不要解释。\n\n"+text
+  client=_llm_client(config)
   try:
-   reply=await AsyncOpenAI(api_key=config.api_key,base_url=config.base_url or None).chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=.1)
-   raw=(reply.choices[0].message.content or "").strip();match=re.search(r"\[[\s\S]*\]",raw);names=json.loads(match.group(0) if match else raw)
+   _log_llm_request("role_candidate_extraction",config,prompt,.1)
+   reply=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=.1)
+   raw=(reply.choices[0].message.content or "").strip();_log_llm_response("role_candidate_extraction",config,raw);match=re.search(r"\[[\s\S]*\]",raw);names=json.loads(match.group(0) if match else raw)
    if isinstance(names,list):
     cleaned=[]
     for name in names:
      value=str(name).strip()
      if 1<len(value)<=20 and value not in cleaned:cleaned.append(value)
     if cleaned:return cleaned[:20]
-  except Exception:pass
+  except Exception:logger.exception("LLM_REQUEST_FAILED stage=role_candidate_extraction model=%s",config.model)
+  finally:await client.close()
  patterns=[r"([\u4e00-\u9fff]{2,4})[：:]",r"([\u4e00-\u9fff]{2,4})(?:说道|问道|笑道|喊道|答道)",r"(?:角色|人物)[：:]?\s*([\u4e00-\u9fff]{2,4})"]
  names=[]
  for pattern in patterns:
@@ -130,12 +175,12 @@ async def narrate(db:Session,script:ExperienceScript,history:list[dict],message:
   if not config or not config.api_key:return (f"副本开场已经展开。你现在作为{identity}置身其中，可以先观察眼前的人与环境。" if not message else f"你选择了“{message}”。周围人物和局势随之变化，接下来你准备怎么做？"),"local-fallback"
   recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
   prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n会话：{recent}\n玩家行动：{message or '生成副本开场'}\n输出中文沉浸式叙事，并在可行动节点停下。"
-  return await _narration_completion(config,prompt,.35)
+  return await _narration_completion(config,prompt,.35,"experience_narration")
  if not config or not config.api_key:
   return (f"{snap.get('openingScene') or '故事在你面前展开，空气里藏着尚未说出的秘密。'}\n\n作为{identity}，你准备做什么？" if not message else f"你选择了“{message}”。环境与人物因此产生了微妙反应，局势正在向未知方向推进。下一步呢？"),"local-fallback"
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
  prompt=f"你是私有互动故事叙事者。玩家身份：{identity}，视角：{script.perspective}。背景：{ctx}\n会话：{recent}\n玩家行动：{message or '生成开场'}\n中文沉浸式叙事；不复述长段来源文本，不替玩家决定或发言，结尾留出行动空间。"
- return await _narration_completion(config,prompt,.8)
+ return await _narration_completion(config,prompt,.8,"original_story_narration")
 async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],message:str,player_identity:str=""):
  snap=script.snapshot or {};config=db.get(LLMConfig,1);identity=player_identity or snap.get("playerIdentity", "你")
  if snap.get("mode")=="experience_snapshot":
@@ -145,10 +190,10 @@ async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],m
    yield f"你选择了“{message}”。周围人物和局势随之变化，接下来你准备怎么做？","local-fallback";return
   recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
   prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n会话：{recent}\n玩家行动：{message}\n输出中文沉浸式叙事，并在可行动节点停下。"
-  async for chunk in _narration_stream(config,prompt,.35):yield chunk,config.model
+  async for chunk in _narration_stream(config,prompt,.35,"experience_narration_stream"):yield chunk,config.model
   return
  if not config or not config.api_key:
   yield f"你选择了“{message}”。环境与人物因此产生了微妙反应，局势正在向未知方向推进。下一步呢？","local-fallback";return
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
  prompt=f"你是私有互动故事叙事者。玩家身份：{identity}，视角：{script.perspective}。背景：{ctx}\n会话：{recent}\n玩家行动：{message}\n中文沉浸式叙事；不复述长段来源文本，不替玩家决定或发言，结尾留出行动空间。"
- async for chunk in _narration_stream(config,prompt,.8):yield chunk,config.model
+ async for chunk in _narration_stream(config,prompt,.8,"original_story_narration_stream"):yield chunk,config.model

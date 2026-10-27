@@ -21,6 +21,18 @@ cd .. && npm run dev
 NOVEL_SKIP_PULL=1 NOVEL_SKIP_INSTALL=1 bash script/restart.sh
 ```
 
+停止本地前后端服务：
+
+```bash
+bash script/stop.sh
+```
+
+如使用了自定义端口，停止时传入同一组端口：
+
+```bash
+NOVEL_API_PORT=8005 NOVEL_WEB_PORT=5180 bash script/stop.sh
+```
+
 - Web：<http://127.0.0.1:5179>
 - API：<http://127.0.0.1:8004/docs>
 
@@ -54,6 +66,18 @@ npm run desktop:make
 
 - macOS：`out/make/*.dmg`（首次安装）和 `out/make/zip/**/*.zip`（自动更新）。
 - Windows：`Setup.exe`、`.nupkg` 和 `RELEASES`。
+
+也可以使用系统专用脚本；它们会从前端、Python sidecar 一直构建到最终分发包：
+
+```bash
+# macOS（当前机器架构；可用 NOVEL_DESKTOP_ARCH=arm64 或 x64 覆盖）
+npm run desktop:make:mac
+
+# Windows PowerShell（默认 x64）
+npm run desktop:make:win
+```
+
+Windows 安装包必须在 Windows 上构建；macOS 安装包建议在对应架构的 macOS 上构建。
 
 桌面版数据库位于系统用户数据目录，升级安装包不会覆盖现有数据：
 

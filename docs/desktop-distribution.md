@@ -27,11 +27,21 @@ cd .. && npm install
 # 桌面开发：Electron 会自行拉起本地 FastAPI；另一个进程运行 Vite
 npm run desktop:dev
 
-# 生成可发布的 sidecar、前端和当前平台安装包
-npm run desktop:make
+# macOS：生成当前架构的 sidecar、前端与 DMG/ZIP
+npm run desktop:make:mac
+
+# Windows PowerShell：生成 .exe sidecar、Setup.exe、.nupkg 与 RELEASES
+npm run desktop:make:win
 ```
 
 构建产物在 `out/`。macOS 会产生 `.dmg`（首次安装）和 `.zip`（自动更新）；Windows 会产生 `Setup.exe`、`.nupkg` 和 `RELEASES`。
+
+两个完整打包入口均位于 `script/`：
+
+- `script/package-macos.sh`：调用前端构建、`build-desktop-backend.sh` 和 Electron Forge。默认采用当前 macOS 架构，可通过 `NOVEL_DESKTOP_ARCH=arm64|x64` 指定。
+- `script/package-windows.ps1`：在 Windows 上创建或使用 `backend/.venv`、安装 PyInstaller、构建 `novel-server.exe`，再生成 Squirrel.Windows 分发包。默认 `x64`，支持 `NOVEL_DESKTOP_ARCH=arm64`。
+
+不要在 macOS 上交叉生成 Windows sidecar，或在 Windows 上交叉生成 macOS sidecar；PyInstaller 产物必须在对应系统和架构上原生构建。
 
 ## 自动更新
 
