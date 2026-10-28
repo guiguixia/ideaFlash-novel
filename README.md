@@ -46,6 +46,13 @@ NOVEL_API_PORT=8005 NOVEL_WEB_PORT=5180 bash script/stop.sh
 
 项目已支持封装为 Electron 桌面应用。安装包内包含前端与 FastAPI 本地服务，最终用户无需安装 Node.js 或 Python；作品、体验记录和模型配置仍只存放在本机。
 
+### 下载体验
+
+- [Windows 下载（64 位 Setup.exe）](https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/package/%E5%89%A7%E6%9C%AC%E5%88%B7-0.1.0%20Setup.exe)
+- [macOS 下载（Apple 芯片 arm64 DMG）](https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/package/%E5%89%A7%E6%9C%AC%E5%88%B7-0.1.0-arm64.dmg)
+
+下载后直接安装即可。首次启动时，在「设置」中填写兼容 OpenAI 的模型服务地址、模型名与 API Key。
+
 ### 桌面开发
 
 完成本地开发环境准备后，执行：
