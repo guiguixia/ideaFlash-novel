@@ -1,6 +1,5 @@
 from typing import Literal
 from pydantic import BaseModel,Field
-class LoginRequest(BaseModel):username:str;password:str
 class LLMConfigUpdateRequest(BaseModel):base_url:str=Field(min_length=1,max_length=500);model:str=Field(min_length=1,max_length=160);api_key:str=Field(default="",max_length=10000)
 class WorkCreateRequest(BaseModel):title:str=Field(min_length=1,max_length=160);summary:str="";genre:str="";world:str="";player_identity:str="";opening_scene:str="";tone:str=""
 class WorkUpdateRequest(WorkCreateRequest):pass

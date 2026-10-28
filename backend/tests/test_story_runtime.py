@@ -7,10 +7,16 @@ from fastapi.testclient import TestClient
 from main import app
 
 
+def test_community_qr_uses_read_only_deployment_config():
+    client = TestClient(app)
+    with patch.dict(os.environ, {"NOVEL_COMMUNITY_QR_IMAGE_URL": "https://cdn.example.com/community-qr.png"}):
+        current = client.get("/api/community-qr")
+    assert current.json()["data"]["imageUrl"] == "https://cdn.example.com/community-qr.png"
+
+
 def test_original_story_can_run_private_experience():
     client = TestClient(app)
-    token = client.post("/api/auth/login", json={"username": "ideaFlash", "password": "ideaFlash"}).json()["data"]["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {}
     work = client.post("/api/works", headers=headers, json={"title": "测试世界", "opening_scene": "钟声在空港响起。"}).json()["data"]
     script = client.post(f"/api/works/{work['id']}/scripts", headers=headers, json={}).json()["data"]
     session = client.post(f"/api/works/{work['id']}/scripts/{script['id']}/sessions", headers=headers, json={}).json()["data"]
@@ -29,8 +35,7 @@ def test_original_story_can_run_private_experience():
 
 def test_imported_source_segments_are_paginated_outside_work_detail():
     client = TestClient(app)
-    token = client.post("/api/auth/login", json={"username": "ideaFlash", "password": "ideaFlash"}).json()["data"]["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {}
     source = "\n".join(f"第{i}章 标题{i}\n正文{i}" for i in range(1, 52))
     work = client.post(
         "/api/works/import",
@@ -51,8 +56,7 @@ def test_imported_source_segments_are_paginated_outside_work_detail():
 
 def test_imported_script_extracts_character_names_for_later_session_selection():
     client = TestClient(app)
-    token = client.post("/api/auth/login", json={"username": "ideaFlash", "password": "ideaFlash"}).json()["data"]["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {}
     work = client.post(
         "/api/works/import",
         headers=headers,
@@ -88,8 +92,7 @@ def test_imported_script_extracts_character_names_for_later_session_selection():
 
 def test_imported_script_reuses_cached_chapter_extraction():
     client = TestClient(app)
-    token = client.post("/api/auth/login", json={"username": "ideaFlash", "password": "ideaFlash"}).json()["data"]["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {}
     work = client.post(
         "/api/works/import", headers=headers, data={"work_type": "imported_novel", "title": "章节缓存"},
         files={"file": ("book.txt", "第1章 缓存\n萧炎说道：我会继续修炼。".encode(), "text/plain")},
@@ -110,8 +113,7 @@ def test_imported_script_reuses_cached_chapter_extraction():
 
 def test_imported_script_fails_instead_of_guessing_character_names_when_model_fails():
     client = TestClient(app)
-    token = client.post("/api/auth/login", json={"username": "ideaFlash", "password": "ideaFlash"}).json()["data"]["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {}
     work = client.post(
         "/api/works/import", headers=headers, data={"work_type": "imported_novel", "title": "失败不猜人名"},
         files={"file": ("book.txt", "第1章\n萧炎苦笑道：我会继续修炼。".encode(), "text/plain")},

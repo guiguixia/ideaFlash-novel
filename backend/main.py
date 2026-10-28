@@ -1,16 +1,20 @@
 from __future__ import annotations
-import json
+import json,os
 from datetime import datetime,timezone
-from fastapi import BackgroundTasks,Depends,FastAPI,File,Form,HTTPException,UploadFile
+from pathlib import Path
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks,Depends,FastAPI,File,Form,HTTPException,Response,UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import models
-from auth import CurrentUser,authenticate_admin,get_current_user
+from auth import CurrentUser,get_current_user
 from database import Base,SessionLocal,engine,get_db,reset_legacy_schema,run_schema_migrations
 from schemas import *
 from services import build_experience_snapshot,experience_role_cards,narrate,narrate_stream,snapshot,split_source_document
 from trace import TraceMiddleware,trace_id
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+DEFAULT_COMMUNITY_QR_IMAGE_URL="https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/image/public/ideaFlash-%E5%89%A7%E6%9C%AC%E5%88%B7%E8%AE%A8%E8%AE%BA%E7%BE%A4.png"
 reset_legacy_schema();Base.metadata.create_all(engine);run_schema_migrations()
 def recover_interrupted_experience_builds():
  db=SessionLocal()
@@ -55,14 +59,18 @@ async def run_experience_build(run_id:str):
  finally:db.close()
 @app.get("/health")
 def health():return {"status":"ok"}
-@app.post("/api/auth/login")
-def login(body:LoginRequest):return out(authenticate_admin(body.username,body.password),"登录成功")
 @app.get("/api/settings/llm")
-def llm_get(current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+def llm_get(response:Response,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ response.headers["Cache-Control"]="no-store"
  c=db.get(models.LLMConfig,1);return out({"baseUrl":c.base_url if c else "","model":c.model if c else "gpt-4o-mini","apiKey":c.api_key if c else "","apiKeyConfigured":bool(c and c.api_key)})
 @app.patch("/api/settings/llm")
 def llm_set(body:LLMConfigUpdateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- c=db.get(models.LLMConfig,1) or models.LLMConfig(id=1);db.add(c);c.base_url=body.base_url.strip().rstrip("/");c.model=body.model.strip();c.api_key=body.api_key.strip() or c.api_key;db.commit();return out({"baseUrl":c.base_url,"model":c.model,"apiKeyConfigured":bool(c.api_key)},"大模型配置已保存")
+ c=db.get(models.LLMConfig,1) or models.LLMConfig(id=1);db.add(c);c.base_url=body.base_url.strip().rstrip("/");c.model=body.model.strip();c.api_key=body.api_key.strip();db.commit();return out({"baseUrl":c.base_url,"model":c.model,"apiKeyConfigured":bool(c.api_key)},"大模型配置已保存")
+@app.get("/api/community-qr")
+def community_qr_get():
+ url=os.getenv("NOVEL_COMMUNITY_QR_IMAGE_URL",DEFAULT_COMMUNITY_QR_IMAGE_URL).strip()
+ if url and not url.startswith(("https://","http://")):raise HTTPException(500,"NOVEL_COMMUNITY_QR_IMAGE_URL 必须是公开的 http(s) 图片地址")
+ return out({"imageUrl":url})
 @app.get("/api/works")
 def works(current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  rows=db.query(models.Work).filter_by(platform_user_id=current_user.platform_user_id).order_by(models.Work.updated_at.desc()).all();return lst([wd(x,{"segments":db.query(models.SourceSegment).filter_by(work_id=x.id).count(),"scripts":db.query(models.ExperienceScript).filter_by(work_id=x.id).count()}) for x in rows])

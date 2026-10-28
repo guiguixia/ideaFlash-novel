@@ -10,6 +10,8 @@ from prompts.scenario_context import render_scenario_initial_context_analysis_pr
 from trace import logger
 
 def _llm_client(config:LLMConfig):return AsyncOpenAI(api_key=config.api_key,base_url=config.base_url or None,http_client=httpx.AsyncClient(trust_env=False,timeout=httpx.Timeout(90)),max_retries=0)
+def _require_narration_config(config:LLMConfig|None):
+ if not config or not config.api_key:raise RuntimeError("未配置大模型 API Key，无法继续体验")
 
 def _log_llm_request(stage:str,config:LLMConfig,prompt:str,temperature:float,stream:bool=False,response_format:str="text"):
  logger.info("LLM_REQUEST_BEGIN\nstage: %s\nmodel: %s\nbase_url: %s\ntemperature: %s\nstream: %s\nresponse_format: %s\nprompt:\n%s\nLLM_REQUEST_END",stage,config.model,config.base_url,temperature,stream,response_format,prompt)
@@ -172,12 +174,11 @@ async def narrate(db:Session,script:ExperienceScript,history:list[dict],message:
  if snap.get("mode")=="experience_snapshot":
   role_card=next((row for row in snap.get("roleCards",[]) if isinstance(row,dict) and row.get("name")==identity),{})
   context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
-  if not config or not config.api_key:return (f"副本开场已经展开。你现在作为{identity}置身其中，可以先观察眼前的人与环境。" if not message else f"你选择了“{message}”。周围人物和局势随之变化，接下来你准备怎么做？"),"local-fallback"
+  _require_narration_config(config)
   recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
   prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n会话：{recent}\n玩家行动：{message or '生成副本开场'}\n输出中文沉浸式叙事，并在可行动节点停下。"
   return await _narration_completion(config,prompt,.35,"experience_narration")
- if not config or not config.api_key:
-  return (f"{snap.get('openingScene') or '故事在你面前展开，空气里藏着尚未说出的秘密。'}\n\n作为{identity}，你准备做什么？" if not message else f"你选择了“{message}”。环境与人物因此产生了微妙反应，局势正在向未知方向推进。下一步呢？"),"local-fallback"
+ _require_narration_config(config)
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
  prompt=f"你是私有互动故事叙事者。玩家身份：{identity}，视角：{script.perspective}。背景：{ctx}\n会话：{recent}\n玩家行动：{message or '生成开场'}\n中文沉浸式叙事；不复述长段来源文本，不替玩家决定或发言，结尾留出行动空间。"
  return await _narration_completion(config,prompt,.8,"original_story_narration")
@@ -186,14 +187,12 @@ async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],m
  if snap.get("mode")=="experience_snapshot":
   role_card=next((row for row in snap.get("roleCards",[]) if isinstance(row,dict) and row.get("name")==identity),{})
   context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
-  if not config or not config.api_key:
-   yield f"你选择了“{message}”。周围人物和局势随之变化，接下来你准备怎么做？","local-fallback";return
+  _require_narration_config(config)
   recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
   prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n会话：{recent}\n玩家行动：{message}\n输出中文沉浸式叙事，并在可行动节点停下。"
   async for chunk in _narration_stream(config,prompt,.35,"experience_narration_stream"):yield chunk,config.model
   return
- if not config or not config.api_key:
-  yield f"你选择了“{message}”。环境与人物因此产生了微妙反应，局势正在向未知方向推进。下一步呢？","local-fallback";return
+ _require_narration_config(config)
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
  prompt=f"你是私有互动故事叙事者。玩家身份：{identity}，视角：{script.perspective}。背景：{ctx}\n会话：{recent}\n玩家行动：{message}\n中文沉浸式叙事；不复述长段来源文本，不替玩家决定或发言，结尾留出行动空间。"
  async for chunk in _narration_stream(config,prompt,.8,"original_story_narration_stream"):yield chunk,config.model

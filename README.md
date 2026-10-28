@@ -36,7 +36,7 @@ NOVEL_API_PORT=8005 NOVEL_WEB_PORT=5180 bash script/stop.sh
 - Web：<http://127.0.0.1:5179>
 - API：<http://127.0.0.1:8004/docs>
 
-本地管理员账号：`ideaFlash / ideaFlash`。登录后可在设置中填写 OpenAI 兼容服务地址、模型和 API Key；配置仅保存在本机数据库中。
+本地版本不需要登录。首次进入会引导配置 OpenAI 兼容服务地址、模型和 API Key；模型配置仅保存在本机数据库中。微信入群二维码默认使用仓库内置的公开 OSS 地址；部署时可通过 `NOVEL_COMMUNITY_QR_IMAGE_URL` 覆盖。
 
 ## 数据迁移
 
