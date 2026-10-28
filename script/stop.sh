@@ -32,4 +32,4 @@ stop_port() {
 stop_port "$API_PORT"
 stop_port "$WEB_PORT"
 rm -f "$ROOT/backend/logs/backend.pid" "$ROOT/web-dev.pid"
-echo "本地 Novel 服务已停止"
+echo "本地剧本刷服务已停止"

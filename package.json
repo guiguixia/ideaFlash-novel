@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "main": "desktop/main.cjs",
-  "productName": "IdeaFlash Story",
+  "productName": "剧本刷",
   "workspaces": ["web"],
   "scripts": {
     "dev": "concurrently -n backend,web -c blue,magenta \"npm run dev:backend\" \"npm run dev:web\"",

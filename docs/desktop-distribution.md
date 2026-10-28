@@ -2,7 +2,7 @@
 
 ## 目标
 
-将 IdeaFlash Story 发布为私有本地桌面应用：用户下载安装包后，无需安装 Node.js 或 Python，即可在本机使用。作品、体验副本、会话和大模型配置始终存放在本机，不上传到更新服务。
+将剧本刷（ScriptRun）发布为私有本地桌面应用：用户下载安装包后，无需安装 Node.js 或 Python，即可在本机使用。作品、体验副本、会话和大模型配置始终存放在本机，不上传到更新服务。
 
 ## 运行结构
 
@@ -15,7 +15,7 @@ Electron 主进程
     └── novel.db
 ```
 
-Electron 启动时设置 `NOVEL_DATABASE_URL`，数据库固定写入系统用户数据目录：macOS 为 `~/Library/Application Support/IdeaFlash Story`，Windows 为 `%APPDATA%/IdeaFlash Story`。安装包、应用升级和卸载流程均不应删除该目录。
+Electron 启动时设置 `NOVEL_DATABASE_URL`，数据库固定写入系统用户数据目录：macOS 为 `~/Library/Application Support/剧本刷`，Windows 为 `%APPDATA%/剧本刷`。从 IdeaFlash Story 升级时，会在首次启动自动迁移原用户数据。安装包、应用升级和卸载流程均不应删除该目录。
 
 ## 开发与构建
 
@@ -50,15 +50,15 @@ npm run desktop:make:win
 1. 设置更新根地址并构建：
 
    ```bash
-   NOVEL_UPDATE_BASE_URL=https://updates.example.com/ideaflash-story npm run desktop:make
+   NOVEL_UPDATE_BASE_URL=https://updates.example.com/script-run npm run desktop:make
    ```
 
 2. 上传本次构建生成的更新文件，目录必须按平台和架构组织：
 
    ```text
-   https://updates.example.com/ideaflash-story/
+   https://updates.example.com/script-run/
    ├── darwin/arm64/RELEASES.json
-   ├── darwin/arm64/IdeaFlash-Story-<version>-darwin-arm64.zip
+   ├── darwin/arm64/剧本刷-<version>-darwin-arm64.zip
    ├── darwin/x64/...
    └── win32/x64/RELEASES
    ```
@@ -66,7 +66,7 @@ npm run desktop:make:win
 3. 在 `desktop/update-config.json` 写入同一个根地址，再重新构建发布包。该文件没有密钥，可随安装包公开：
 
    ```json
-   { "baseUrl": "https://updates.example.com/ideaflash-story" }
+   { "baseUrl": "https://updates.example.com/script-run" }
    ```
 
 应用仅在生产包中检查更新；下载完成后由系统提示重启应用后安装。未配置 `baseUrl` 时自动更新完全禁用，适合本地测试和手动分发。

@@ -79,7 +79,7 @@ echo "启动前端 :$WEB_PORT..."
 
 for _ in {1..60}; do
   if curl -fsS "http://127.0.0.1:$API_PORT/health" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$WEB_PORT" >/dev/null 2>&1; then
-    echo "Novel 已就绪："
+    echo "剧本刷已就绪："
     echo "  Web: http://127.0.0.1:$WEB_PORT"
     echo "  API: http://127.0.0.1:$API_PORT/docs"
     exit 0
@@ -87,7 +87,7 @@ for _ in {1..60}; do
   sleep 1
 done
 
-echo "Novel 在 60 秒内未完全就绪，请查看：" >&2
+echo "剧本刷在 60 秒内未完全就绪，请查看：" >&2
 echo "  $ROOT/backend/logs/server.log" >&2
 echo "  $ROOT/web-dev.log" >&2
 exit 1

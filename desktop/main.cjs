@@ -4,7 +4,8 @@ const fs = require('node:fs')
 const http = require('node:http')
 const { spawn } = require('node:child_process')
 
-const APP_NAME = 'IdeaFlash Story'
+const APP_NAME = '剧本刷 · ScriptRun'
+const LEGACY_APP_NAME = 'IdeaFlash Story'
 
 if (require('electron-squirrel-startup')) app.quit()
 
@@ -40,6 +41,8 @@ function waitForApi(timeout = 45000) {
 function startBackend() {
   if (backendProcess && !backendProcess.killed) return
   const dataDir = app.getPath('userData')
+  const legacyDataDir = path.join(app.getPath('appData'), LEGACY_APP_NAME)
+  if (!fs.existsSync(dataDir) && fs.existsSync(legacyDataDir)) fs.cpSync(legacyDataDir, dataDir, { recursive: true })
   fs.mkdirSync(dataDir, { recursive: true })
   const env = {
     ...process.env,

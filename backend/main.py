@@ -62,7 +62,7 @@ def health():return {"status":"ok"}
 @app.get("/api/settings/llm")
 def llm_get(response:Response,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  response.headers["Cache-Control"]="no-store"
- c=db.get(models.LLMConfig,1);return out({"baseUrl":c.base_url if c else "","model":c.model if c else "gpt-4o-mini","apiKey":c.api_key if c else "","apiKeyConfigured":bool(c and c.api_key)})
+ c=db.get(models.LLMConfig,1);return out({"baseUrl":c.base_url if c else "https://api.deepseek.com","model":c.model if c else "deepseek-v4-pro","apiKey":c.api_key if c else "","apiKeyConfigured":bool(c and c.api_key)})
 @app.patch("/api/settings/llm")
 def llm_set(body:LLMConfigUpdateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  c=db.get(models.LLMConfig,1) or models.LLMConfig(id=1);db.add(c);c.base_url=body.base_url.strip().rstrip("/");c.model=body.model.strip();c.api_key=body.api_key.strip();db.commit();return out({"baseUrl":c.base_url,"model":c.model,"apiKeyConfigured":bool(c.api_key)},"大模型配置已保存")

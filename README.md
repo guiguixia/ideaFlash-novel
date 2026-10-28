@@ -1,4 +1,4 @@
-# ideaFlash Story
+# 剧本刷 · ScriptRun
 
 私有互动故事创作与体验平台。
 
@@ -81,8 +81,10 @@ Windows 安装包必须在 Windows 上构建；macOS 安装包建议在对应架
 
 桌面版数据库位于系统用户数据目录，升级安装包不会覆盖现有数据：
 
-- macOS：`~/Library/Application Support/IdeaFlash Story/novel.db`
-- Windows：`%APPDATA%/IdeaFlash Story/novel.db`
+- macOS：`~/Library/Application Support/剧本刷/novel.db`
+- Windows：`%APPDATA%/剧本刷/novel.db`
+
+从旧版 `IdeaFlash Story` 升级时，桌面应用会在首次启动自动迁移原有本地数据。
 
 ### 自动更新
 
@@ -93,7 +95,7 @@ Windows 安装包必须在 Windows 上构建；macOS 安装包建议在对应架
 3. 用同一更新根地址构建并上传更新产物：
 
    ```bash
-   NOVEL_UPDATE_BASE_URL=https://updates.example.com/ideaflash-story npm run desktop:make
+   NOVEL_UPDATE_BASE_URL=https://updates.example.com/script-run npm run desktop:make
    ```
 
 正式自动更新需要 macOS Developer ID 签名与公证；Windows 也建议配置代码签名证书。完整发布目录、版本迁移与回滚规则请见 [桌面应用与自动更新文档](docs/desktop-distribution.md)。
