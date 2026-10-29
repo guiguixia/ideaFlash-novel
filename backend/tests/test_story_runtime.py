@@ -33,6 +33,19 @@ def test_original_story_can_run_private_experience():
     assert renamed.json()["data"]["title"] == "萧炎的第一条支线"
 
 
+def test_work_can_be_deleted_with_its_related_records():
+    client = TestClient(app)
+    work = client.post("/api/works", json={"title": "待删除的作品"}).json()["data"]
+
+    deleted = client.delete(f"/api/works/{work['id']}")
+
+    assert deleted.status_code == 200
+    assert deleted.json()["data"]["id"] == work["id"]
+    assert client.get(f"/api/works/{work['id']}").status_code == 404
+    works = client.get("/api/works").json()["list"]
+    assert work["id"] not in {item["id"] for item in works}
+
+
 def test_imported_source_segments_are_paginated_outside_work_detail():
     client = TestClient(app)
     headers = {}

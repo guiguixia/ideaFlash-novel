@@ -88,6 +88,9 @@ async def work_import(work_type:str=Form(...),title:str=Form(""),file:UploadFile
 @app.get("/api/works/{work_id}")
 def work_get(work_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
     w=owned(db,work_id,current_user);segments=db.query(models.SourceSegment).filter_by(work_id=w.id).count();scripts=db.query(models.ExperienceScript).filter_by(work_id=w.id).order_by(models.ExperienceScript.created_at.desc()).all();sessions=db.query(models.ExperienceSession).filter_by(work_id=w.id).order_by(models.ExperienceSession.updated_at.desc()).all();runs={x.script_id:x for x in db.query(models.ExperienceBuildRun).filter_by(work_id=w.id).all()};return out({**wd(w,{"segments":segments,"scripts":len(scripts)}),"scripts":[{**sd(x,sum(y.script_id==x.id for y in sessions)),"build":({"status":runs[x.id].status,"stage":runs[x.id].stage,"processed":runs[x.id].processed,"total":runs[x.id].total,"error":runs[x.id].error} if x.id in runs else None)} for x in scripts],"sessions":[sess(x) for x in sessions]})
+@app.delete("/api/works/{work_id}")
+def work_delete(work_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);db.delete(w);db.commit();return out({"id":work_id},"作品及其体验记录已删除")
 @app.get("/api/works/{work_id}/segments")
 def work_segments(work_id:str,page:int=1,page_size:int=20,start_sequence:int|None=None,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
     w=owned(db,work_id,current_user);page=max(1,page);page_size=min(50,max(10,page_size));query=db.query(models.SourceSegment).filter_by(work_id=w.id)

@@ -53,6 +53,8 @@ NOVEL_API_PORT=8005 NOVEL_WEB_PORT=5180 bash script/stop.sh
 
 下载后直接安装即可。首次启动时，在「设置」中填写兼容 OpenAI 的模型服务地址、模型名与 API Key。
 
+交流反馈：QQ 讨论群 `1097381307`。
+
 ### 桌面开发
 
 完成本地开发环境准备后，执行：
