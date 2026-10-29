@@ -55,6 +55,10 @@ NOVEL_API_PORT=8005 NOVEL_WEB_PORT=5180 bash script/stop.sh
 
 交流反馈：QQ 讨论群 `1097381307`。
 
+微信讨论群（扫码加入）：
+
+<img src="docs/images/ideaFlash-script-run-qq-group.png" alt="ideaFlash-剧本刷微信讨论群二维码" width="280" />
+
 ### 桌面开发
 
 完成本地开发环境准备后，执行：
