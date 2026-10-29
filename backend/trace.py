@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -23,7 +24,8 @@ class TraceFilter(logging.Filter):
 
 def configure_logging() -> logging.Logger:
     formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | trace=%(trace_id)s | %(message)s")
-    log_dir = Path(__file__).resolve().parent / "logs"
+    data_dir = os.getenv("NOVEL_DATA_DIR", "").strip()
+    log_dir = Path(data_dir) / "logs" if data_dir else Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     handlers = [logging.StreamHandler(), logging.FileHandler(log_dir / "novel.log", encoding="utf-8")]
     for handler in handlers:

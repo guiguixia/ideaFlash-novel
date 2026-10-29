@@ -11,6 +11,7 @@ if (require('electron-squirrel-startup')) app.quit()
 
 const API_PORT = 8004
 let backendProcess
+let backendLogFile
 let quitting = false
 
 function databaseUrl(databasePath) {
@@ -57,9 +58,13 @@ function startBackend() {
     : (process.env.NOVEL_PYTHON_BIN || path.join(__dirname, '..', 'backend', '.venv', 'bin', 'python'))
   const args = app.isPackaged ? [] : ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(API_PORT)]
   if (!fs.existsSync(command)) throw new Error(`未找到本地故事服务：${command}`)
-  backendProcess = spawn(command, args, { cwd: app.isPackaged ? undefined : path.join(__dirname, '..', 'backend'), env, stdio: 'pipe' })
+  const logDir = path.join(dataDir, 'logs')
+  fs.mkdirSync(logDir, { recursive: true })
+  backendLogFile = fs.openSync(path.join(logDir, 'sidecar.log'), 'a')
+  backendProcess = spawn(command, args, { cwd: app.isPackaged ? undefined : path.join(__dirname, '..', 'backend'), env, stdio: ['ignore', backendLogFile, backendLogFile] })
   backendProcess.on('error', error => dialog.showErrorBox('本地服务无法启动', error.message))
   backendProcess.on('exit', code => {
+    if (backendLogFile != null) { fs.closeSync(backendLogFile); backendLogFile = undefined }
     if (!quitting && code !== 0) dialog.showErrorBox('本地服务已停止', `服务进程异常退出（${code ?? '未知'}）`)
   })
 }

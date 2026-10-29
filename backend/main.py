@@ -1,7 +1,9 @@
 from __future__ import annotations
-import json,os
+import asyncio,json,os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 from pathlib import Path
+from queue import Empty,Queue
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks,Depends,FastAPI,File,Form,HTTPException,Response,UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,10 @@ from services import build_experience_snapshot,experience_role_cards,narrate,nar
 from trace import TraceMiddleware,trace_id
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 DEFAULT_COMMUNITY_QR_IMAGE_URL="https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/image/public/ideaFlash-%E5%89%A7%E6%9C%AC%E5%88%B7%E8%AE%A8%E8%AE%BA%E7%BE%A4.png"
+# 导入资料的副本构建会连续调用很多次模型；它与用户正在进行的体验必须隔离，
+# 否则多个构建任务会占满线程，使新开场或对话只能无期限排队。
+LLM_BUILD_WORKERS=ThreadPoolExecutor(max_workers=1,thread_name_prefix="story-build-llm")
+LLM_INTERACTIVE_WORKERS=ThreadPoolExecutor(max_workers=2,thread_name_prefix="story-interactive-llm")
 reset_legacy_schema();Base.metadata.create_all(engine);run_schema_migrations()
 def recover_interrupted_experience_builds():
  db=SessionLocal()
@@ -41,6 +47,14 @@ def owned(db,id,u):
  w=db.query(models.Work).filter_by(id=id,platform_user_id=u.platform_user_id).first()
  if not w:raise HTTPException(404,"作品不存在")
  return w
+async def run_in_interactive_llm_worker(job,*args):
+ loop=asyncio.get_running_loop()
+ return await loop.run_in_executor(LLM_INTERACTIVE_WORKERS,lambda:asyncio.run(job(*args)))
+async def run_in_build_llm_worker(job,*args):
+ loop=asyncio.get_running_loop()
+ return await loop.run_in_executor(LLM_BUILD_WORKERS,lambda:asyncio.run(job(*args)))
+def enqueue_interactive_llm_worker(job,*args):
+ return LLM_INTERACTIVE_WORKERS.submit(lambda:asyncio.run(job(*args)))
 async def run_experience_build(run_id:str):
  db=SessionLocal()
  try:
@@ -57,6 +71,47 @@ async def run_experience_build(run_id:str):
   if 'script' in locals() and script:script.status="failed"
   db.commit()
  finally:db.close()
+
+async def run_experience_build_in_worker(run_id:str):
+ """让耗时的大模型构建脱离 API 事件循环，避免任务卡住作品列表与其他操作。"""
+ await run_in_build_llm_worker(run_experience_build,run_id)
+
+async def generate_session_opening(session_id:str):
+ db=SessionLocal()
+ try:
+  x=db.get(models.ExperienceSession,session_id)
+  if not x:raise RuntimeError("体验记录不存在")
+  s=db.get(models.ExperienceScript,x.script_id)
+  if not s:raise RuntimeError("体验副本不存在")
+  player=str((x.state or {}).get("playerIdentity") or s.player_identity or "一名进入故事的旅人")
+  return await narrate(db,s,[],player_identity=player)
+ finally:db.close()
+
+async def generate_session_turn(session_id:str,events:Queue):
+ db=SessionLocal()
+ try:
+  x=db.get(models.ExperienceSession,session_id)
+  if not x:raise RuntimeError("体验记录不存在")
+  s=db.get(models.ExperienceScript,x.script_id)
+  if not s:raise RuntimeError("体验副本不存在")
+  history=list(x.history or [])
+  if len(history)<2 or history[-1].get("status")!="generating":raise RuntimeError("没有待生成的剧情")
+  message=str(history[-2].get("content") or "").strip()
+  chunks=[];model=""
+  async for chunk,item_model in narrate_stream(db,s,history[:-1],message,str((x.state or {}).get("playerIdentity") or "")):
+   chunks.append(chunk);model=item_model;events.put(("chunk",chunk))
+  reply="".join(chunks).strip()
+  if not reply:raise RuntimeError("大模型未返回可展示内容")
+  x.history=history[:-1]+[{"role":"assistant","content":reply,"model":model}];x.turn+=1;x.updated_at=datetime.now(timezone.utc);db.commit();events.put(("done",sess(x,True)))
+ except Exception as exc:
+  db.rollback()
+  x=db.get(models.ExperienceSession,session_id)
+  if x:
+   history=list(x.history or [])
+   if history and history[-1].get("status")=="generating":x.history=history[:-1]+[{"role":"assistant","content":"","status":"failed","error":str(exc)}];x.updated_at=datetime.now(timezone.utc);db.commit()
+  events.put(("error",str(exc)))
+ finally:db.close()
+
 @app.get("/health")
 def health():return {"status":"ok"}
 @app.get("/api/settings/llm")
@@ -112,7 +167,7 @@ async def script_create(work_id:str,body:ExperienceScriptCreateRequest,backgroun
  count=db.query(models.ExperienceScript).filter_by(work_id=w.id).count();title=body.title.strip() or (f"第{body.start_sequence}—{body.end_sequence}段体验" if parts else "开局体验");player=body.player_identity.strip() or str((w.settings or {}).get("playerIdentity") or "");s=models.ExperienceScript(work_id=w.id,title=title,source_start=body.start_sequence,source_end=body.end_sequence,player_identity=player,perspective=body.perspective,version=count+1,status="queued" if parts else "ready",snapshot=snapshot(w,parts,player) if not parts else {});db.add(s);db.flush();run=None
  if parts:run=models.ExperienceBuildRun(work_id=w.id,script_id=s.id,status="queued",stage="queued",total=len(parts));db.add(run)
  db.commit();db.refresh(s)
- if run:background_tasks.add_task(run_experience_build,run.id)
+ if run:background_tasks.add_task(run_experience_build_in_worker,run.id)
  return out({**sd(s),"build":{"status":run.status,"stage":run.stage,"processed":0,"total":run.total,"error":""} if run else None},"体验副本正在构建" if run else "体验副本已生成")
 @app.get("/api/works/{work_id}/scripts/{script_id}/role-cards")
 def script_role_cards(work_id:str,script_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
@@ -129,7 +184,7 @@ async def session_create(work_id:str,script_id:str,body:ExperienceSessionCreateR
  if characters and player not in characters:raise HTTPException(400,"请从副本可用角色中选择玩家身份")
  if not player and w.work_type!="original_story":raise HTTPException(400,"该副本未识别到可选择角色，请重新生成副本")
  player=player or "一名进入故事的旅人"
- x=models.ExperienceSession(work_id=w.id,script_id=s.id,title=body.title.strip() or s.title,state={"scriptVersion":s.version,"playerIdentity":player},history=[]);db.add(x);db.flush();opening,model=await narrate(db,s,[],player_identity=player);x.history=[{"role":"assistant","content":opening,"model":model}];db.commit();db.refresh(x);return out(sess(x,True),"体验已开始")
+ x=models.ExperienceSession(work_id=w.id,script_id=s.id,title=body.title.strip() or s.title,state={"scriptVersion":s.version,"playerIdentity":player},history=[]);db.add(x);db.commit();db.refresh(x);opening,model=await run_in_interactive_llm_worker(generate_session_opening,x.id);x.history=[{"role":"assistant","content":opening,"model":model}];db.commit();db.refresh(x);return out(sess(x,True),"体验已开始")
 @app.get("/api/works/{work_id}/sessions/{session_id}")
 def session_get(work_id:str,session_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);x=db.query(models.ExperienceSession).filter_by(id=session_id,work_id=w.id).first()
@@ -150,24 +205,25 @@ async def session_reset(work_id:str,session_id:str,current_user:CurrentUser=Depe
  s=db.query(models.ExperienceScript).filter_by(id=x.script_id,work_id=w.id).first()
  if not s:raise HTTPException(404,"体验副本不存在")
  player=str((x.state or {}).get("playerIdentity") or s.player_identity or "一名进入故事的旅人")
- opening,model=await narrate(db,s,[],player_identity=player)
+ opening,model=await run_in_interactive_llm_worker(generate_session_opening,x.id)
  x.history=[{"role":"assistant","content":opening,"model":model}];x.turn=0;x.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(x)
  return out(sess(x,True),"体验已重置")
 @app.post("/api/works/{work_id}/sessions/{session_id}/turn")
 async def turn(work_id:str,session_id:str,body:ExperienceTurnRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);x=db.query(models.ExperienceSession).filter_by(id=session_id,work_id=w.id,status="active").first()
  if not x:raise HTTPException(404,"进行中的体验不存在")
- s=db.query(models.ExperienceScript).filter_by(id=x.script_id,work_id=w.id).first();message=body.message.strip();h=list(x.history or []);h.append({"role":"user","content":message})
+ message=body.message.strip();h=list(x.history or [])
+ if h and h[-1].get("role")=="assistant" and h[-1].get("status")=="generating":raise HTTPException(409,"上一段剧情仍在生成中")
+ h.extend([{"role":"user","content":message},{"role":"assistant","content":"","status":"generating"}]);x.history=h;x.updated_at=datetime.now(timezone.utc);db.commit()
  def sse(event:str,data:dict):return f"event: {event}\ndata: {json.dumps(data,ensure_ascii=False)}\n\n"
+ events:Queue=Queue();enqueue_interactive_llm_worker(generate_session_turn,x.id,events)
  async def stream():
-  chunks=[];model=""
-  try:
-   async for chunk,item_model in narrate_stream(db,s,h,message,str((x.state or {}).get("playerIdentity") or "")):
-    chunks.append(chunk);model=item_model;yield sse("chunk",{"content":chunk})
-   reply="".join(chunks).strip()
-   if not reply:raise RuntimeError("大模型未返回可展示内容")
-   h.append({"role":"assistant","content":reply,"model":model});x.history=h;x.turn+=1;x.updated_at=datetime.now(timezone.utc);db.commit()
-   yield sse("done",{"reply":reply,"session":sess(x,True),"traceId":trace_id()})
-  except Exception as exc:
-   db.rollback();yield sse("error",{"message":str(exc),"traceId":trace_id()})
+  while True:
+   try:event,data=events.get_nowait()
+   except Empty:
+    await asyncio.sleep(.08)
+    continue
+   if event=="chunk":yield sse("chunk",{"content":data})
+   elif event=="done":yield sse("done",{"reply":"","session":data,"traceId":trace_id()});return
+   else:yield sse("error",{"message":str(data),"traceId":trace_id()});return
  return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})

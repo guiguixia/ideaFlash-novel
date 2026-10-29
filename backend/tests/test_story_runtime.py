@@ -1,10 +1,12 @@
+import asyncio
 import os
+import threading
 from unittest.mock import AsyncMock, patch
 
 os.environ["NOVEL_DATABASE_URL"] = "sqlite:////tmp/ideaFlash-story-test.db"
 
 from fastapi.testclient import TestClient
-from main import app
+from main import app, run_experience_build_in_worker
 
 
 def test_community_qr_uses_read_only_deployment_config():
@@ -33,6 +35,28 @@ def test_original_story_can_run_private_experience():
     assert renamed.json()["data"]["title"] == "萧炎的第一条支线"
 
 
+def test_turn_keeps_user_message_when_generation_fails():
+    client = TestClient(app)
+    work = client.post("/api/works", json={"title": "持久化体验"}).json()["data"]
+    script = client.post(f"/api/works/{work['id']}/scripts", json={}).json()["data"]
+
+    async def opening(*_args, **_kwargs):
+        return "开场", "test-model"
+
+    async def failed_stream(*_args, **_kwargs):
+        raise RuntimeError("模型暂时不可用")
+        yield ""
+
+    with patch("main.narrate", new=AsyncMock(side_effect=opening)), patch("main.narrate_stream", new=failed_stream):
+        session = client.post(f"/api/works/{work['id']}/scripts/{script['id']}/sessions", json={}).json()["data"]
+        response = client.post(f"/api/works/{work['id']}/sessions/{session['id']}/turn", json={"message": "我先观察四周"})
+
+    assert "event: error" in response.text
+    stored = client.get(f"/api/works/{work['id']}/sessions/{session['id']}").json()["data"]
+    assert stored["history"][-2] == {"role": "user", "content": "我先观察四周"}
+    assert stored["history"][-1]["status"] == "failed"
+
+
 def test_work_can_be_deleted_with_its_related_records():
     client = TestClient(app)
     work = client.post("/api/works", json={"title": "待删除的作品"}).json()["data"]
@@ -44,6 +68,21 @@ def test_work_can_be_deleted_with_its_related_records():
     assert client.get(f"/api/works/{work['id']}").status_code == 404
     works = client.get("/api/works").json()["list"]
     assert work["id"] not in {item["id"] for item in works}
+
+
+def test_experience_build_runs_in_its_own_worker_queue():
+    worker_thread_id = None
+
+    async def build(_run_id: str):
+        nonlocal worker_thread_id
+        worker_thread_id = threading.get_ident()
+
+    with patch("main.run_experience_build", new=build):
+        api_thread_id = threading.get_ident()
+        asyncio.run(run_experience_build_in_worker("build-in-worker"))
+
+    assert worker_thread_id is not None
+    assert worker_thread_id != api_thread_id
 
 
 def test_imported_source_segments_are_paginated_outside_work_detail():
