@@ -609,7 +609,7 @@ export function LibraryHome() {
                 </label>
                 {kind === "imported_novel" && (
                   <a
-                    href="/templates/novel-import-template.txt"
+                    href="templates/novel-import-template.txt"
                     download="小说导入章节模板.txt"
                     className="mt-3 inline-flex text-xs font-medium text-brand hover:underline"
                   >

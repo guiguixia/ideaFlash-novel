@@ -10,6 +10,16 @@ from prompts.scenario_context import render_scenario_initial_context_analysis_pr
 from trace import logger
 
 def _llm_client(config:LLMConfig):return AsyncOpenAI(api_key=config.api_key,base_url=config.base_url or None,http_client=httpx.AsyncClient(trust_env=False,timeout=httpx.Timeout(90)),max_retries=0)
+def _model_request_options(config:LLMConfig):
+ """按供应商官方 OpenAI 兼容参数关闭可选思考，未知供应商不传扩展字段。"""
+ base_url=(config.base_url or "").lower();model=(config.model or "").lower()
+ if "deepseek" in base_url or model.startswith("deepseek-"):
+  return {"extra_body":{"thinking":{"type":"disabled"}}}
+ if "dashscope" in base_url or model.startswith("qwen"):
+  return {"extra_body":{"enable_thinking":False}}
+ if "bigmodel" in base_url or "z.ai" in base_url or model.startswith("glm-"):
+  return {"extra_body":{"thinking":{"type":"disabled"}}}
+ return {}
 def _require_narration_config(config:LLMConfig|None):
  if not config or not config.api_key:raise RuntimeError("未配置大模型 API Key，无法继续体验")
 
@@ -23,7 +33,7 @@ async def _narration_completion(config:LLMConfig,prompt:str,temperature:float,st
  client=_llm_client(config)
  try:
   _log_llm_request(stage,config,prompt,temperature)
-  response=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature)
+  response=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,**_model_request_options(config))
   content=(response.choices[0].message.content or "场景静待你的选择。").strip()
   _log_llm_response(stage,config,content)
   return content,config.model
@@ -36,7 +46,7 @@ async def _narration_stream(config:LLMConfig,prompt:str,temperature:float,stage:
  chunks=[]
  try:
   _log_llm_request(stage,config,prompt,temperature,stream=True)
-  response=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,stream=True)
+  response=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,stream=True,**_model_request_options(config))
   async for item in response:
    content=item.choices[0].delta.content if item.choices else ""
    if content:
@@ -63,7 +73,7 @@ async def _json_completion(db:Session,prompt:str,temperature:float=.1,stage:str=
  client=_llm_client(config)
  try:
   _log_llm_request(stage,config,prompt,temperature,response_format="json_object")
-  result=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,response_format={"type":"json_object"})
+  result=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=temperature,response_format={"type":"json_object"},**_model_request_options(config))
   raw=(result.choices[0].message.content or "").strip()
   _log_llm_response(stage,config,raw)
   if not raw:raise RuntimeError(f"大模型 {config.model} 未返回内容")
@@ -153,7 +163,7 @@ async def extract_character_names(db:Session,segments:list[SourceSegment]):
   client=_llm_client(config)
   try:
    _log_llm_request("role_candidate_extraction",config,prompt,.1)
-   reply=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=.1)
+   reply=await client.chat.completions.create(model=config.model,messages=[{"role":"user","content":prompt}],temperature=.1,**_model_request_options(config))
    raw=(reply.choices[0].message.content or "").strip();_log_llm_response("role_candidate_extraction",config,raw);match=re.search(r"\[[\s\S]*\]",raw);names=json.loads(match.group(0) if match else raw)
    if isinstance(names,list):
     cleaned=[]

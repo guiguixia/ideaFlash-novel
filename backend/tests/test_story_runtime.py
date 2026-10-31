@@ -7,6 +7,15 @@ os.environ["NOVEL_DATABASE_URL"] = "sqlite:////tmp/ideaFlash-story-test.db"
 
 from fastapi.testclient import TestClient
 from main import app, run_experience_build_in_worker
+from models import LLMConfig
+from services import _model_request_options
+
+
+def test_known_provider_options_disable_thinking_mode():
+    assert _model_request_options(LLMConfig(base_url="https://api.deepseek.com", model="deepseek-v4-pro")) == {"extra_body": {"thinking": {"type": "disabled"}}}
+    assert _model_request_options(LLMConfig(base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3-max")) == {"extra_body": {"enable_thinking": False}}
+    assert _model_request_options(LLMConfig(base_url="https://open.bigmodel.cn/api/paas/v4", model="glm-4.7")) == {"extra_body": {"thinking": {"type": "disabled"}}}
+    assert _model_request_options(LLMConfig(base_url="https://api.example.com", model="example-chat")) == {}
 
 
 def test_community_qr_uses_read_only_deployment_config():
