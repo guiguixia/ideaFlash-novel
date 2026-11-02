@@ -48,8 +48,7 @@ NOVEL_API_PORT=8005 NOVEL_WEB_PORT=5180 bash script/stop.sh
 
 ### 下载体验
 
-- [Windows 下载（64 位 Setup.exe）](https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/package/%E5%89%A7%E6%9C%AC%E5%88%B7-0.1.0%20Setup.exe)
-- [macOS 下载（Apple 芯片 arm64 DMG）](https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/package/%E5%89%A7%E6%9C%AC%E5%88%B7-0.1.0-arm64.dmg)
+- [Windows / macOS 安装包下载（百度网盘）](https://pan.baidu.com/s/14M4s5NJeBUrW-UHvjG3Wnw?pwd=1111)，提取码：`1111`
 
 下载后直接安装即可。首次启动时，在「设置」中填写兼容 OpenAI 的模型服务地址、模型名与 API Key。
 
