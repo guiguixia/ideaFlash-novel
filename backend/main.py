@@ -14,7 +14,7 @@ import models
 from auth import CurrentUser,get_current_user
 from database import Base,SessionLocal,engine,get_db,reset_legacy_schema,run_schema_migrations
 from schemas import *
-from services import _narration_completion,build_experience_snapshot,experience_role_cards,narrate,narrate_stream,role_chat_reply,role_chat_reply_stream,snapshot,split_source_document
+from services import _narration_completion,build_experience_snapshot,compact_role_chat_memory,experience_role_cards,narrate,narrate_stream,role_chat_reply_stream,snapshot,split_source_document
 from trace import TraceMiddleware,trace_id
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 ROLE_ASSET_DIR=Path(os.getenv("NOVEL_DATA_DIR") or Path(__file__).resolve().parent / "data") / "role-cards";ROLE_ASSET_DIR.mkdir(parents=True,exist_ok=True)
@@ -142,11 +142,11 @@ async def generate_role_chat_turn(chat_id:str,events:Queue):
   history=list(chat.history or [])
   if len(history)<2 or history[-1].get("status")!="generating":raise RuntimeError("没有待生成的私聊消息")
   message=str(history[-2].get("content") or "").strip();chunks=[];model=""
-  async for chunk,item_model in role_chat_reply_stream(db,script,card,history[:-1],message):
+  async for chunk,item_model in role_chat_reply_stream(db,script,card,history[:-1],message,chat.memory_summary or "",chat.summary_cursor or 0):
    chunks.append(chunk);model=item_model;events.put(("chunk",chunk))
   reply="".join(chunks).strip()
   if not reply:raise RuntimeError("大模型未返回可展示内容")
-  chat.history=history[:-1]+[{"role":"assistant","content":reply,"model":model}];chat.turn+=1;chat.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(chat);events.put(("done",role_chat(chat,True)))
+  chat.history=history[:-1]+[{"role":"assistant","content":reply,"model":model}];chat.turn+=1;await compact_role_chat_memory(db,chat,card);chat.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(chat);events.put(("done",role_chat(chat,True)))
  except Exception as exc:
   db.rollback();chat=db.get(models.RoleChatSession,chat_id)
   if chat:

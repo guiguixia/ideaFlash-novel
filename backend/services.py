@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from models import ExperienceRoleCard,ExperienceScript,LLMConfig,SourceSegment,Work
 from prompts.experience import render_experience_snapshot_extraction_prompt
 from prompts.historical_question import render_historical_question_resolver_prompt
+from prompts.role_chat import render_role_card_chat_prompt,render_role_chat_memory_summary_prompt
 from prompts.scenario_context import render_scenario_initial_context_analysis_prompt
 from trace import logger
 
@@ -207,17 +208,46 @@ async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],m
  prompt=f"你是私有互动故事叙事者。玩家身份：{identity}，视角：{script.perspective}。背景：{ctx}\n会话：{recent}\n玩家行动：{message}\n中文沉浸式叙事；不复述长段来源文本，不替玩家决定或发言，结尾留出行动空间。"
  async for chunk in _narration_stream(config,prompt,.8,"original_story_narration_stream"):yield chunk,config.model
 
-async def role_chat_reply(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str):
+ROLE_CHAT_CONTEXT_TURNS=15
+ROLE_CHAT_SUMMARY_TURNS=10
+
+async def role_chat_reply_stream(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
  config=db.get(LLMConfig,1);_require_narration_config(config)
- snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
- profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
- recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[-12:])
- prompt=f"你现在扮演副本角色「{card.name}」。只依据这张角色卡与副本世界观进行日常私聊；不得推进、改写或剧透副本剧情，也不要称自己是 AI。用符合角色身份与性格的中文自然回复，简洁但有情绪。\n角色卡：{json.dumps(profile,ensure_ascii=False)}\n副本世界观：{json.dumps(world,ensure_ascii=False)[:6000]}\n私聊记录：{recent}\n用户：{message}"
- return await _narration_completion(config,prompt,.75,"role_card_chat")
-async def role_chat_reply_stream(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str):
- config=db.get(LLMConfig,1);_require_narration_config(config)
- snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
- profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
- recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[-12:])
- prompt=f"你现在扮演副本角色「{card.name}」。只依据这张角色卡与副本世界观进行日常私聊；不得推进、改写或剧透副本剧情，也不要称自己是 AI。用符合角色身份与性格的中文自然回复，简洁但有情绪。\n角色卡：{json.dumps(profile,ensure_ascii=False)}\n副本世界观：{json.dumps(world,ensure_ascii=False)[:6000]}\n私聊记录：{recent}\n用户：{message}"
+ prompt=_role_chat_prompt(script,card,history,message,memory_summary,summary_cursor)
  async for chunk in _narration_stream(config,prompt,.75,"role_card_chat_stream"):yield chunk,config.model
+
+def _role_chat_prompt(script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
+ """整理私聊上下文；具体规则纳管在 prompts.role_chat，两个私聊入口共用。"""
+ snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
+ profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
+ recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[max(summary_cursor,0):][-ROLE_CHAT_CONTEXT_TURNS*2:])
+ return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message)
+
+def _completed_role_chat_turns(history:list[dict],cursor:int=0):
+ """从未压缩历史中按时间顺序识别成功的“用户消息 + 角色回复”回合。"""
+ turns=[];index=max(cursor,0)
+ while index+1<len(history):
+  user,assistant=history[index],history[index+1]
+  if user.get("role")=="user" and assistant.get("role")=="assistant" and assistant.get("content") and assistant.get("status")!="failed":turns.append((user,assistant,index+2))
+  index+=2
+ return turns
+
+def _format_role_chat_turns(turns:list[tuple[dict,dict,int]],role_name:str):
+ """摘要输入保持时间升序，并保留说话者，避免摘要器混淆事实来源。"""
+ return "\n\n".join(f"用户：{user.get('content','')}\n{role_name}：{assistant.get('content','')}" for user,assistant,_ in turns)
+
+async def compact_role_chat_memory(db:Session,chat,card:ExperienceRoleCard):
+ """每满 15 个未压缩成功回合，压缩最早 10 回合，完整 history 仍保留给界面展示。"""
+ while True:
+  turns=_completed_role_chat_turns(chat.history or [],chat.summary_cursor or 0)
+  if len(turns)<ROLE_CHAT_CONTEXT_TURNS:return
+  batch=turns[:ROLE_CHAT_SUMMARY_TURNS]
+  config=db.get(LLMConfig,1);_require_narration_config(config)
+  prompt=render_role_chat_memory_summary_prompt(previous_summary=chat.memory_summary or "",turns=_format_role_chat_turns(batch,card.name))
+  try:
+   summary,_=await _narration_completion(config,prompt,.25,"role_card_chat_summary")
+  except Exception:
+   logger.exception("ROLE_CHAT_SUMMARY_FAILED chat_id=%s",chat.id)
+   return
+  chat.memory_summary=summary[:800]
+  chat.summary_cursor=batch[-1][2]

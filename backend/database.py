@@ -43,3 +43,11 @@ def run_schema_migrations():
             if "experience_extraction" not in columns:
                 connection.exec_driver_sql("ALTER TABLE source_segments ADD COLUMN experience_extraction JSON")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (2, CURRENT_TIMESTAMP)")
+        role_chat_memory=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 3").first()
+        if not role_chat_memory:
+            columns={column["name"] for column in inspect(engine).get_columns("role_chat_sessions")}
+            if "memory_summary" not in columns:
+                connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN memory_summary TEXT NOT NULL DEFAULT ''")
+            if "summary_cursor" not in columns:
+                connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN summary_cursor INTEGER NOT NULL DEFAULT 0")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (3, CURRENT_TIMESTAMP)")
