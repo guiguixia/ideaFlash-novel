@@ -7,7 +7,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router";
-import { kernelGet, kernelPatch } from "./lib/kernel-api";
+import { kernelGet, kernelPatch, kernelPost } from "./lib/kernel-api";
 import { LibraryHome } from "./LibraryHome";
 import { RuntimeWorkbench } from "./RuntimeWorkbench";
 
@@ -126,7 +126,8 @@ function SettingsPage({
     [apiKey, setApiKey] = useState(""),
     [showApiKey, setShowApiKey] = useState(false),
     [notice, setNotice] = useState(""),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [testing, setTesting] = useState(false);
   useEffect(() => {
     void kernelGet<{ baseUrl: string; model: string; apiKey: string }>(
       "/api/settings/llm",
@@ -153,6 +154,23 @@ function SettingsPage({
       setNotice("大模型配置已保存");
     } catch (reason) {
       setError(message(reason));
+    }
+  }
+  async function testConnection() {
+    setNotice("");
+    setError("");
+    setTesting(true);
+    try {
+      const result = await kernelPost<{ model: string; replyPreview: string }>("/api/settings/llm/test", {
+        base_url: baseUrl,
+        model,
+        api_key: apiKey,
+      });
+      setNotice(`连接成功 · ${result.model}${result.replyPreview ? ` · ${result.replyPreview}` : ""}`);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setTesting(false);
     }
   }
   return (
@@ -219,9 +237,14 @@ function SettingsPage({
             </button>
           </span>
         </label>
-        <button className="mt-5 rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">
-          保存配置
-        </button>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button type="button" onClick={() => void testConnection()} disabled={testing} className="rounded-lg border px-4 py-2 text-sm hover:bg-hover disabled:opacity-50">
+            {testing ? "测试中…" : "测试连接"}
+          </button>
+          <button className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">
+            保存配置
+          </button>
+        </div>
         {notice && <p className="mt-3 text-sm text-success">{notice}</p>}
         {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       </form>

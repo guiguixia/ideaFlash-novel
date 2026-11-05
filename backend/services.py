@@ -3,7 +3,7 @@ import io,json,re,zipfile
 import httpx
 from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
-from models import ExperienceScript,LLMConfig,SourceSegment,Work
+from models import ExperienceRoleCard,ExperienceScript,LLMConfig,SourceSegment,Work
 from prompts.experience import render_experience_snapshot_extraction_prompt
 from prompts.historical_question import render_historical_question_resolver_prompt
 from prompts.scenario_context import render_scenario_initial_context_analysis_prompt
@@ -206,3 +206,18 @@ async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],m
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
  prompt=f"你是私有互动故事叙事者。玩家身份：{identity}，视角：{script.perspective}。背景：{ctx}\n会话：{recent}\n玩家行动：{message}\n中文沉浸式叙事；不复述长段来源文本，不替玩家决定或发言，结尾留出行动空间。"
  async for chunk in _narration_stream(config,prompt,.8,"original_story_narration_stream"):yield chunk,config.model
+
+async def role_chat_reply(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str):
+ config=db.get(LLMConfig,1);_require_narration_config(config)
+ snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
+ profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
+ recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[-12:])
+ prompt=f"你现在扮演副本角色「{card.name}」。只依据这张角色卡与副本世界观进行日常私聊；不得推进、改写或剧透副本剧情，也不要称自己是 AI。用符合角色身份与性格的中文自然回复，简洁但有情绪。\n角色卡：{json.dumps(profile,ensure_ascii=False)}\n副本世界观：{json.dumps(world,ensure_ascii=False)[:6000]}\n私聊记录：{recent}\n用户：{message}"
+ return await _narration_completion(config,prompt,.75,"role_card_chat")
+async def role_chat_reply_stream(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str):
+ config=db.get(LLMConfig,1);_require_narration_config(config)
+ snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
+ profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
+ recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[-12:])
+ prompt=f"你现在扮演副本角色「{card.name}」。只依据这张角色卡与副本世界观进行日常私聊；不得推进、改写或剧透副本剧情，也不要称自己是 AI。用符合角色身份与性格的中文自然回复，简洁但有情绪。\n角色卡：{json.dumps(profile,ensure_ascii=False)}\n副本世界观：{json.dumps(world,ensure_ascii=False)[:6000]}\n私聊记录：{recent}\n用户：{message}"
+ async for chunk in _narration_stream(config,prompt,.75,"role_card_chat_stream"):yield chunk,config.model

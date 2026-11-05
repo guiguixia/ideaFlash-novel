@@ -8,6 +8,7 @@ type KernelEnvelope<T> = {
 
 const desktopApiBase = window.location.protocol === 'file:' ? 'http://127.0.0.1:8004' : ''
 const apiUrl = (path: string): string => desktopApiBase ? new URL(path, desktopApiBase).toString() : path
+export const kernelUrl = apiUrl
 
 async function kernelRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData

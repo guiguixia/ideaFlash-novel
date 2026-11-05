@@ -57,7 +57,7 @@ type StoryTemplate = {
 const labels: Record<Kind, string> = {
   original_story: "原创故事",
   imported_novel: "导入小说",
-  imported_screenwork: "导入影视资料",
+  imported_screenwork: "影视灵感",
 };
 const failure = (e: unknown) =>
   e instanceof Error ? e.message : "操作失败，请重试";
@@ -159,8 +159,8 @@ const createOptions: [Kind, string, string, typeof Sparkles, boolean?][] = [
   ["imported_novel", "导入小说", "选择连续章节，生成私有体验副本", BookOpen],
   [
     "imported_screenwork",
-    "导入影视资料",
-    "即将支持导入剧本、字幕或梗概",
+    "影视灵感",
+    "即将支持输入片名并采集影视信息",
     Clapperboard,
     true,
   ],

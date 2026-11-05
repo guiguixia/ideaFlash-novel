@@ -1,6 +1,6 @@
 {
   "name": "novel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "main": "desktop/main.cjs",
   "productName": "剧本刷",
@@ -10,7 +10,7 @@
     "dev:backend": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8004 --reload-exclude logs --reload-exclude novel.db --reload-delay 1",
     "dev:web": "cd web && npm run dev",
     "build": "cd web && npm run build",
-    "desktop:dev": "concurrently -k -n web,electron -c magenta,cyan \"npm run dev:web\" \"wait-on http://127.0.0.1:5179 && ELECTRON_START_URL=http://127.0.0.1:5179 electron .\"",
+    "desktop:dev": "bash script/desktop-dev.sh",
     "desktop:backend": "bash script/build-desktop-backend.sh",
     "desktop:make": "npm run build && npm run desktop:backend && electron-forge make",
     "desktop:make:mac": "bash script/package-macos.sh",

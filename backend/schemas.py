@@ -7,3 +7,7 @@ class ExperienceScriptCreateRequest(BaseModel):title:str="";start_sequence:int=F
 class ExperienceSessionCreateRequest(BaseModel):title:str="";player_identity:str=""
 class ExperienceSessionUpdateRequest(BaseModel):title:str=Field(min_length=1,max_length=160)
 class ExperienceTurnRequest(BaseModel):message:str=Field(min_length=1,max_length=4000)
+class RoleCardUpsertRequest(BaseModel):name:str=Field(min_length=1,max_length=80);identity:str="";personality:str="";appearance:str="";background:str="";current_state:str=""
+class RoleChatCreateRequest(BaseModel):title:str=""
+class RoleChatUpdateRequest(BaseModel):title:str=Field(min_length=1,max_length=160)
+class RoleChatTurnRequest(BaseModel):message:str=Field(min_length=1,max_length=4000)

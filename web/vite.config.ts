@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  publicDir: resolve(__dirname, '../experiments'),
   define: {
     __NOVEL_CLIENT_VERSION__: JSON.stringify('0.1.0-openstory'),
   },
@@ -27,6 +28,7 @@ export default defineConfig({
       '/events': 'http://127.0.0.1:8004',
       '/health': 'http://127.0.0.1:8004',
       '/api': 'http://127.0.0.1:8004',
+      '/uploads': 'http://127.0.0.1:8004',
     },
   },
 })

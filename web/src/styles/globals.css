@@ -28,7 +28,7 @@ p.mt-12.text-center.text-sm.text-muted-foreground::before {
 }
 
 p.mt-12.text-center.text-sm.text-muted-foreground::after {
-  content: "创建原创故事  ·  导入小说  ·  导入影视资料\A所有作品和体验均仅自己可见";
+  content: "创建原创故事  ·  导入小说  ·  影视灵感\A所有作品和体验均仅自己可见";
   white-space: pre-line;
   display: block;
   margin-top: 1.4rem;

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>萧炎 · 桌宠动效实验</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="laboratory">
+      <section class="intro">
+        <p class="eyebrow">EXPERIMENT / 01</p>
+        <h1>角色不必困在<br /><em>对话框里。</em></h1>
+        <p class="description">以立绘为核心的桌面陪伴实验：轻微呼吸、漂浮、眨眼与即时回应。拖动角色，或点击它唤起一句话。</p>
+        <div class="notes">
+          <span>立绘驱动</span><span>无业务数据</span><span>纯前端实验</span>
+        </div>
+      </section>
+
+      <section class="stage" aria-label="桌宠预览区">
+        <div class="constellation constellation-one"></div>
+        <div class="constellation constellation-two"></div>
+        <div class="moon"><span>宠</span></div>
+        <div class="pet-wrap" id="petWrap">
+          <button class="pet" id="pet" type="button" aria-label="点击萧炎互动">
+            <span class="pet-halo"></span>
+            <span class="pet-orbit orbit-a"></span>
+            <span class="pet-orbit orbit-b"></span>
+            <img id="petImage" alt="角色立绘" />
+            <span class="eye-flash"></span>
+            <span class="pet-name">萧炎 <small>· 待机中</small></span>
+          </button>
+          <div class="speech" id="speech" aria-live="polite">风雪未歇，陪我走一段？</div>
+        </div>
+        <div class="stage-floor"></div>
+        <p class="drag-hint">拖动角色试试</p>
+      </section>
+
+      <aside class="controls" aria-label="实验控制">
+        <p class="eyebrow">MOTION LAYERS</p>
+        <div class="control-card">
+          <div><strong>浮游</strong><span>悬浮节奏</span></div>
+          <button class="toggle is-on" data-motion="float" type="button" aria-pressed="true">ON</button>
+        </div>
+        <div class="control-card">
+          <div><strong>呼吸</strong><span>细微缩放</span></div>
+          <button class="toggle is-on" data-motion="breathe" type="button" aria-pressed="true">ON</button>
+        </div>
+        <div class="control-card">
+          <div><strong>灵光</strong><span>冰蓝粒子</span></div>
+          <button class="toggle is-on" data-motion="glow" type="button" aria-pressed="true">ON</button>
+        </div>
+        <button class="speak" id="speak" type="button">和萧炎说句话 <span>↗</span></button>
+      </aside>
+    </main>
+    <script src="./pet.js"></script>
+  </body>
+</html>
