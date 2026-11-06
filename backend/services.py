@@ -219,9 +219,10 @@ async def role_chat_reply_stream(db:Session,script:ExperienceScript,card:Experie
 def _role_chat_prompt(script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
  """整理私聊上下文；具体规则纳管在 prompts.role_chat，两个私聊入口共用。"""
  snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
+ custom_emotions=[{"id":str(item.get("id") or ""),"name":str(item.get("name") or ""),"description":str(item.get("description") or "")} for item in (card.custom_emotions or []) if item.get("id")]
  profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
  recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[max(summary_cursor,0):][-ROLE_CHAT_CONTEXT_TURNS*2:])
- return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message)
+ return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,custom_emotions_json=json.dumps(custom_emotions,ensure_ascii=False))
 
 def _completed_role_chat_turns(history:list[dict],cursor:int=0):
  """从未压缩历史中按时间顺序识别成功的“用户消息 + 角色回复”回合。"""

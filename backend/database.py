@@ -51,3 +51,25 @@ def run_schema_migrations():
             if "summary_cursor" not in columns:
                 connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN summary_cursor INTEGER NOT NULL DEFAULT 0")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (3, CURRENT_TIMESTAMP)")
+        role_card_emotions=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 4").first()
+        if not role_card_emotions:
+            columns={column["name"] for column in inspect(engine).get_columns("experience_role_cards")}
+            if "emotion_images" not in columns:
+                connection.exec_driver_sql("ALTER TABLE experience_role_cards ADD COLUMN emotion_images JSON NOT NULL DEFAULT '{}'")
+            if "special_emotion_label" not in columns:
+                connection.exec_driver_sql("ALTER TABLE experience_role_cards ADD COLUMN special_emotion_label VARCHAR(40) NOT NULL DEFAULT '特殊状态'")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (4, CURRENT_TIMESTAMP)")
+        custom_role_emotions=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 5").first()
+        if not custom_role_emotions:
+            columns={column["name"] for column in inspect(engine).get_columns("experience_role_cards")}
+            if "custom_emotions" not in columns:
+                connection.exec_driver_sql("ALTER TABLE experience_role_cards ADD COLUMN custom_emotions JSON NOT NULL DEFAULT '[]'")
+            rows=connection.exec_driver_sql("SELECT id, emotion_images, special_emotion_label, custom_emotions FROM experience_role_cards").mappings()
+            for row in rows:
+                images=json.loads(row["emotion_images"] or "{}") if isinstance(row["emotion_images"],str) else (row["emotion_images"] or {})
+                custom=json.loads(row["custom_emotions"] or "[]") if isinstance(row["custom_emotions"],str) else (row["custom_emotions"] or [])
+                legacy_path=images.pop("special","")
+                if legacy_path and not custom:
+                    custom.append({"id":"custom_legacy","name":row["special_emotion_label"] or "特殊状态","description":"","image_path":legacy_path})
+                connection.exec_driver_sql("UPDATE experience_role_cards SET emotion_images = ?, custom_emotions = ? WHERE id = ?",(json.dumps(images,ensure_ascii=False),json.dumps(custom,ensure_ascii=False),row["id"]))
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (5, CURRENT_TIMESTAMP)")

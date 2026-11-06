@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,json,os
+import asyncio,json,os,re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 from pathlib import Path
@@ -45,10 +45,29 @@ def sess(x,full=False):
  d={"id":x.id,"scriptId":x.script_id,"title":x.title,"status":x.status,"turn":x.turn,"state":x.state or {},"createdAt":x.created_at.isoformat() if x.created_at else None}
  if full:d["history"]=x.history or []
  return d
-def role_card(row):return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"imageUrl":f"/uploads/role-cards/{row.image_path}" if row.image_path else "","roleMode":"replacement"}
+EMOTION_SLOTS=("default","thinking","puzzled","happy","low")
+MOOD_TAG_RE=re.compile(r"^\s*\[mood:([a-z][a-z0-9_-]{0,63})\]\s*$")
+MOOD_TAG_PREFIX_RE=re.compile(r"^\s*\[mood:([a-z][a-z0-9_-]{0,63})\]\s*")
+def custom_emotions(card):return [item for item in (card.custom_emotions or []) if isinstance(item,dict) and item.get("id")]
+def mood_ids(card):return set(EMOTION_SLOTS)|{str(item["id"]) for item in custom_emotions(card)}
+def valid_mood(card,value):return value if value in mood_ids(card) else "default"
+def normalize_role_chat_history(history):
+ cleaned=[]
+ for row in history or []:
+  item=dict(row);match=MOOD_TAG_PREFIX_RE.match(str(item.get("content") or "")) if item.get("role")=="assistant" else None
+  if match:
+   item["content"]=str(item.get("content") or "")[match.end():]
+   if not item.get("mood") or item.get("mood")=="default":item["mood"]=match.group(1)
+  cleaned.append(item)
+ return cleaned
+def role_card(row):
+ images={slot:f"/uploads/role-cards/{path}" for slot,path in (row.emotion_images or {}).items() if slot in EMOTION_SLOTS and path}
+ if row.image_path:images["default"]=f"/uploads/role-cards/{row.image_path}"
+ custom=[{"id":str(item["id"]),"name":str(item.get("name") or "自定义状态"),"description":str(item.get("description") or ""),"imageUrl":f"/uploads/role-cards/{item['image_path']}" if item.get("image_path") else ""} for item in custom_emotions(row)]
+ return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"imageUrl":images.get("default",""),"emotionImages":images,"customEmotions":custom,"roleMode":"replacement"}
 def role_chat(chat,full=False):
  d={"id":chat.id,"title":chat.title,"turn":chat.turn,"createdAt":chat.created_at.isoformat() if chat.created_at else None,"updatedAt":chat.updated_at.isoformat() if chat.updated_at else None}
- if full:d["history"]=chat.history or []
+ if full:d["history"]=normalize_role_chat_history(chat.history)
  return d
 def seed_role_cards(db,work_id,script):
  if db.query(models.ExperienceRoleCard).filter_by(script_id=script.id).count():return
@@ -139,14 +158,33 @@ async def generate_role_chat_turn(chat_id:str,events:Queue):
   if not card:raise RuntimeError("角色卡不存在")
   script=db.get(models.ExperienceScript,card.script_id)
   if not script:raise RuntimeError("体验副本不存在")
-  history=list(chat.history or [])
+  history=normalize_role_chat_history(chat.history)
   if len(history)<2 or history[-1].get("status")!="generating":raise RuntimeError("没有待生成的私聊消息")
-  message=str(history[-2].get("content") or "").strip();chunks=[];model=""
+  message=str(history[-2].get("content") or "").strip();chunks=[];model="";mood="default";prefix="";waiting_for_mood=True
   async for chunk,item_model in role_chat_reply_stream(db,script,card,history[:-1],message,chat.memory_summary or "",chat.summary_cursor or 0):
-   chunks.append(chunk);model=item_model;events.put(("chunk",chunk))
+   model=item_model
+   if waiting_for_mood:
+    prefix+=chunk
+    prefix_match=MOOD_TAG_PREFIX_RE.match(prefix)
+    if prefix_match:
+     mood=valid_mood(card,prefix_match.group(1));events.put(("mood",mood));content=prefix[prefix_match.end():];waiting_for_mood=False
+     if content:chunks.append(content);events.put(("chunk",content))
+     prefix="";continue
+    if "\n" not in prefix and len(prefix)<80:continue
+    first_line,separator,content=prefix.partition("\n");matched=MOOD_TAG_RE.match(first_line);waiting_for_mood=False
+    if matched:
+     mood=valid_mood(card,matched.group(1));events.put(("mood",mood))
+     if content:chunks.append(content);events.put(("chunk",content))
+    else:chunks.append(prefix);events.put(("chunk",prefix))
+    prefix=""
+   else:chunks.append(chunk);events.put(("chunk",chunk))
+  if waiting_for_mood and prefix:
+   matched=MOOD_TAG_RE.match(prefix)
+   if matched:mood=valid_mood(card,matched.group(1));events.put(("mood",mood))
+   else:chunks.append(prefix);events.put(("chunk",prefix))
   reply="".join(chunks).strip()
   if not reply:raise RuntimeError("大模型未返回可展示内容")
-  chat.history=history[:-1]+[{"role":"assistant","content":reply,"model":model}];chat.turn+=1;await compact_role_chat_memory(db,chat,card);chat.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(chat);events.put(("done",role_chat(chat,True)))
+  chat.history=history[:-1]+[{"role":"assistant","content":reply,"model":model,"mood":mood}];chat.turn+=1;await compact_role_chat_memory(db,chat,card);chat.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(chat);events.put(("done",role_chat(chat,True)))
  except Exception as exc:
   db.rollback();chat=db.get(models.RoleChatSession,chat_id)
   if chat:
@@ -238,12 +276,47 @@ def role_card_create(work_id:str,script_id:str,body:RoleCardUpsertRequest,curren
 def role_card_update(work_id:str,script_id:str,card_id:str,body:RoleCardUpsertRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);card.name=body.name.strip();card.identity=body.identity.strip();card.personality=body.personality.strip();card.appearance=body.appearance.strip();card.background=body.background.strip();card.current_state=body.current_state.strip();db.commit();db.refresh(card);return out(role_card(card),"角色卡已保存")
 @app.post("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/image")
-async def role_card_image(work_id:str,script_id:str,card_id:str,file:UploadFile=File(...),current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+async def role_card_image(work_id:str,script_id:str,card_id:str,slot:str="default",file:UploadFile=File(...),current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);raw=await file.read()
+ if slot not in EMOTION_SLOTS:raise HTTPException(400,"不支持的固定情绪槽位")
  if not raw or len(raw)>5*1024*1024:raise HTTPException(400,"图片不能为空且不得超过 5MB")
  suffix={"image/jpeg":".jpg","image/png":".png","image/webp":".webp","image/gif":".gif"}.get(file.content_type or "")
  if not suffix:raise HTTPException(400,"仅支持 JPG、PNG、WebP 或 GIF 图片")
- card.image_path=f"{card.id}{suffix}"; (ROLE_ASSET_DIR/card.image_path).write_bytes(raw);db.commit();db.refresh(card);return out(role_card(card),"角色形象已上传")
+ path=f"{card.id}{suffix}" if slot=="default" else f"{card.id}-{slot}{suffix}"
+ (ROLE_ASSET_DIR/path).write_bytes(raw)
+ if slot=="default":card.image_path=path
+ else:
+  images=dict(card.emotion_images or {});images[slot]=path;card.emotion_images=images
+ db.commit();db.refresh(card);return out(role_card(card),"角色形象已上传")
+@app.delete("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/image")
+def role_card_image_delete(work_id:str,script_id:str,card_id:str,slot:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id)
+ if slot not in EMOTION_SLOTS or slot=="default":raise HTTPException(400,"默认形象不可删除")
+ images=dict(card.emotion_images or {});images.pop(slot,None);card.emotion_images=images;db.commit();db.refresh(card);return out(role_card(card),"情绪形象已删除")
+@app.post("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/custom-emotions")
+def role_card_custom_emotion_create(work_id:str,script_id:str,card_id:str,body:RoleCardCustomEmotionRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);items=[dict(item) for item in custom_emotions(card)]
+ if len(items)>=5:raise HTTPException(400,"每个角色最多新增 5 个自定义状态")
+ items.append({"id":f"custom_{models.new_id()[:12]}","name":body.name.strip(),"description":body.description.strip(),"image_path":""});card.custom_emotions=items;db.commit();db.refresh(card);return out(role_card(card),"自定义状态已新增")
+@app.patch("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/custom-emotions/{emotion_id}")
+def role_card_custom_emotion_update(work_id:str,script_id:str,card_id:str,emotion_id:str,body:RoleCardCustomEmotionRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);items=[dict(item) for item in custom_emotions(card)];item=next((item for item in items if item["id"]==emotion_id),None)
+ if not item:raise HTTPException(404,"自定义状态不存在")
+ item["name"],item["description"]=body.name.strip(),body.description.strip();card.custom_emotions=items;db.commit();db.refresh(card);return out(role_card(card),"自定义状态已保存")
+@app.post("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/custom-emotions/{emotion_id}/image")
+async def role_card_custom_emotion_image(work_id:str,script_id:str,card_id:str,emotion_id:str,file:UploadFile=File(...),current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);items=[dict(item) for item in custom_emotions(card)];item=next((item for item in items if item["id"]==emotion_id),None)
+ if not item:raise HTTPException(404,"自定义状态不存在")
+ raw=await file.read()
+ if not raw or len(raw)>5*1024*1024:raise HTTPException(400,"图片不能为空且不得超过 5MB")
+ suffix={"image/jpeg":".jpg","image/png":".png","image/webp":".webp","image/gif":".gif"}.get(file.content_type or "")
+ if not suffix:raise HTTPException(400,"仅支持 JPG、PNG、WebP 或 GIF 图片")
+ path=f"{card.id}-{emotion_id}{suffix}";(ROLE_ASSET_DIR/path).write_bytes(raw);item["image_path"]=path;card.custom_emotions=items;db.commit();db.refresh(card);return out(role_card(card),"自定义状态形象已上传")
+@app.delete("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/custom-emotions/{emotion_id}")
+def role_card_custom_emotion_delete(work_id:str,script_id:str,card_id:str,emotion_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);items=custom_emotions(card);remaining=[item for item in items if item["id"]!=emotion_id]
+ if len(remaining)==len(items):raise HTTPException(404,"自定义状态不存在")
+ card.custom_emotions=remaining;db.commit();db.refresh(card);return out(role_card(card),"自定义状态已删除")
 @app.post("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats")
 def role_chat_create(work_id:str,script_id:str,card_id:str,body:RoleChatCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);chat=models.RoleChatSession(role_card_id=card.id,title=body.title.strip());db.add(chat);db.flush()
@@ -281,9 +354,10 @@ async def role_chat_turn(work_id:str,script_id:str,card_id:str,chat_id:str,body:
    except Empty:
     await asyncio.sleep(.08);continue
    if event=="chunk":yield sse("chunk",{"content":data})
+   elif event=="mood":yield sse("mood",{"mood":data})
    elif event=="done":yield sse("done",{"session":data});return
    else:yield sse("error",{"message":data});return
- return StreamingResponse(stream(),media_type="text/event-stream")
+ return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 @app.post("/api/works/{work_id}/scripts/{script_id}/sessions")
 async def session_create(work_id:str,script_id:str,body:ExperienceSessionCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);s=db.query(models.ExperienceScript).filter_by(id=script_id,work_id=w.id).first()

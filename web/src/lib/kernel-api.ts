@@ -56,7 +56,7 @@ export function kernelUpload<T>(path: string, form: FormData): Promise<T> {
   return kernelRequest<T>(path, { method: 'POST', body: form })
 }
 
-export async function kernelStreamPost<T>(path: string, body: unknown, onChunk: (content: string) => void): Promise<T> {
+export async function kernelStreamPost<T>(path: string, body: unknown, onChunk: (content: string) => void, onEvent?: (event: string, payload: Record<string, unknown>) => void): Promise<T> {
   const response = await fetch(apiUrl(path), { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' } })
   if (!response.ok || !response.body) throw new Error(`请求失败（HTTP ${response.status}）`)
   const reader = response.body.getReader(), decoder = new TextDecoder()
@@ -70,6 +70,7 @@ export async function kernelStreamPost<T>(path: string, body: unknown, onChunk: 
       if (!data) continue
       const payload = JSON.parse(data) as { content?: string; message?: string; session?: T }
       if (event === 'chunk' && payload.content) onChunk(payload.content)
+      onEvent?.(event, payload as Record<string, unknown>)
       if (event === 'error') throw new Error(payload.message || '流式生成失败')
       if (event === 'done') done = (payload.session || payload) as T
     }

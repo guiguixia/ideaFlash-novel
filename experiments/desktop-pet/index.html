@@ -28,7 +28,7 @@
             <span class="pet-orbit orbit-b"></span>
             <img id="petImage" alt="角色立绘" />
             <span class="eye-flash"></span>
-            <span class="pet-name">萧炎 <small>· 待机中</small></span>
+            <span class="pet-name">萧炎 <small id="petStatus">· 待机中</small></span>
           </button>
           <div class="speech" id="speech" aria-live="polite">风雪未歇，陪我走一段？</div>
         </div>
@@ -38,6 +38,16 @@
 
       <aside class="controls" aria-label="实验控制">
         <p class="eyebrow">MOTION LAYERS</p>
+        <div class="state-picker" aria-label="角色状态素材预览">
+          <p class="state-picker-title">状态立绘实验</p>
+          <div class="state-buttons">
+            <button class="state-button is-active" data-state="idle" type="button">待机</button>
+            <button class="state-button" data-state="thinking" type="button">思考</button>
+            <button class="state-button" data-state="puzzled" type="button">疑惑</button>
+            <button class="state-button" data-state="flame" type="button">灵焰</button>
+          </div>
+          <p class="state-description" id="stateDescription">默认陪伴状态 · 轻微呼吸与浮游</p>
+        </div>
         <div class="control-card">
           <div><strong>浮游</strong><span>悬浮节奏</span></div>
           <button class="toggle is-on" data-motion="float" type="button" aria-pressed="true">ON</button>
