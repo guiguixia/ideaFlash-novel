@@ -95,3 +95,9 @@ def run_schema_migrations():
             for name,definition in {"rag_status":"VARCHAR(32) NOT NULL DEFAULT 'not_built'","rag_processed":"INTEGER NOT NULL DEFAULT 0","rag_total":"INTEGER NOT NULL DEFAULT 0","rag_error":"TEXT NOT NULL DEFAULT ''"}.items():
                 if name not in columns:connection.exec_driver_sql(f"ALTER TABLE works ADD COLUMN {name} {definition}")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (8, CURRENT_TIMESTAMP)")
+        emotion_descriptions=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 9").first()
+        if not emotion_descriptions:
+            columns={column["name"] for column in inspect(engine).get_columns("experience_role_cards")}
+            if "emotion_descriptions" not in columns:
+                connection.exec_driver_sql("ALTER TABLE experience_role_cards ADD COLUMN emotion_descriptions JSON NOT NULL DEFAULT '{}'")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (9, CURRENT_TIMESTAMP)")

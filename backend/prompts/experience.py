@@ -529,3 +529,13 @@ def render_experience_scene_prompt(
     for placeholder, value in replacements.items():
         prompt = prompt.replace(placeholder, value)
     return prompt
+
+
+def render_experience_mood_protocol(custom_emotions: list[dict]) -> str:
+    """返回体验流首行 mood 协议；自定义状态与角色卡配置保持一致。"""
+    custom_lines = "".join(
+        f"- `[mood:{str(item['id'])}]`：{str(item.get('name') or '自定义状态')}；{str(item.get('description') or '仅在该状态确实出现时使用。')}\n"
+        for item in custom_emotions
+        if isinstance(item, dict) and item.get("id")
+    )
+    return """\n## 当前角色形象状态\n\n回复第一行必须且只能输出一个下列标签，第二行起再输出剧情正文。标签仅用于驱动角色形象，正文不得提及、解释或重复标签。\n\n- `[mood:default]`：平静、普通、日常交流或无法明确归入其他状态时使用；这是默认选择。\n- `[mood:thinking]`：角色确实在斟酌、推演或沉吟时使用。\n- `[mood:puzzled]`：角色确实感到不解、信息矛盾或需要澄清时使用；普通提问、警惕或戒备仍使用 `[mood:default]`。\n- `[mood:happy]`：角色明显愉悦、轻松、期待或欣慰时使用。\n- `[mood:low]`：角色明显低落、失意、悲伤、疲惫或压抑时使用。\n""" + custom_lines + """- 仅可使用以上标签；没有精确匹配时使用 `[mood:default]`，不得编造标签。\n"""

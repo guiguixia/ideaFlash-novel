@@ -66,6 +66,34 @@ def test_turn_keeps_user_message_when_generation_fails():
     assert stored["history"][-1]["status"] == "failed"
 
 
+def test_experience_turn_strips_mood_tag_and_emits_mood_event():
+    client = TestClient(app)
+    work = client.post("/api/works", json={"title": "情绪体验"}).json()["data"]
+    script = client.post(f"/api/works/{work['id']}/scripts", json={"player_identity": "测试角色"}).json()["data"]
+    card = client.post(
+        f"/api/works/{work['id']}/scripts/{script['id']}/role-cards",
+        json={"name": "测试角色", "identity": "", "personality": "", "appearance": "", "background": "", "current_state": ""},
+    ).json()["data"]
+
+    async def opening(*_args, **_kwargs):
+        return "开场", "test-model"
+
+    async def mood_stream(*_args, **_kwargs):
+        yield "[mood:happy]\n", "test-model"
+        yield "场景因你的到来而明亮起来。", "test-model"
+
+    with patch("main.narrate", new=AsyncMock(side_effect=opening)), patch("main.narrate_stream", new=mood_stream):
+        session = client.post(f"/api/works/{work['id']}/scripts/{script['id']}/sessions", json={"player_identity": "测试角色"}).json()["data"]
+        response = client.post(f"/api/works/{work['id']}/sessions/{session['id']}/turn", json={"message": "我轻轻点头"})
+
+    assert "event: mood" in response.text
+    assert '"mood": "happy"' in response.text
+    stored = client.get(f"/api/works/{work['id']}/sessions/{session['id']}").json()["data"]
+    assert stored["history"][-1]["content"] == "场景因你的到来而明亮起来。"
+    assert stored["history"][-1]["mood"] == "happy"
+    assert "[mood:" not in stored["history"][-1]["content"]
+
+
 def test_work_can_be_deleted_with_its_related_records():
     client = TestClient(app)
     work = client.post("/api/works", json={"title": "待删除的作品"}).json()["data"]

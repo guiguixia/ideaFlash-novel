@@ -1,83 +1,1186 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router'
-import { ArrowLeft, QrCode, Settings } from 'lucide-react'
-import { kernelGet, kernelPatch, kernelPost, kernelStreamPost } from './lib/kernel-api'
-import { SourceMaterialPanel } from './SourceMaterialPanel'
-import { RoleCards } from './RoleCards'
-import { RagIndexBuildDialog, type RagIndexPreview } from './RagIndexBuildDialog'
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
+import { ArrowLeft, QrCode, Settings } from "lucide-react";
+import {
+  kernelGet,
+  kernelPatch,
+  kernelPost,
+  kernelStreamPost,
+  kernelUrl,
+} from "./lib/kernel-api";
+import { SourceMaterialPanel } from "./SourceMaterialPanel";
+import { RoleCards } from "./RoleCards";
+import {
+  RagIndexBuildDialog,
+  type RagIndexPreview,
+} from "./RagIndexBuildDialog";
 
-type WorkType = 'original_story' | 'imported_novel' | 'imported_screenwork'
-type Script = { id:string; title:string; sourceStart:number; sourceEnd:number; playerIdentity:string; characters:string[]; version:number; status:string; sessionCount:number; build?:{status:string;stage:string;processed:number;total:number;error:string}|null }
-type RoleCard = { name:string; identity:string; affiliation:string; ability:string; appearance:string; currentState:string; sourceSegmentOrders:number[] }
-type SessionHistoryItem = { role:'user'|'assistant'; content:string; status?:'generating'|'failed'; error?:string; model?:string }
-type Session = { id:string; scriptId:string; title:string; turn:number; state?:{playerIdentity?:string}; history?: SessionHistoryItem[] }
-type Work = { id:string; title:string; workType:WorkType; summary:string; settings:{genre?:string;world?:string;playerIdentity?:string;openingScene?:string;tone?:string}; sourceSegmentCount:number; scriptCount:number; ragIndex?:{status:string;processed:number;total:number;error:string}; scripts?:Script[]; sessions?:Session[] }
-type Segment = { id:string; sequence:number; title:string }
-type SegmentPage = { items:Segment[]; page:number; totalPages:number }
-const message = (err:unknown) => err instanceof Error ? err.message : '操作失败，请重试'
-async function canUseModel(){
-  const config=await kernelGet<{apiKeyConfigured:boolean}>('/api/settings/llm')
-  if(config.apiKeyConfigured)return true
-  window.dispatchEvent(new Event('story:model-required'))
-  return false
+type WorkType = "original_story" | "imported_novel" | "imported_screenwork";
+type Script = {
+  id: string;
+  title: string;
+  sourceStart: number;
+  sourceEnd: number;
+  playerIdentity: string;
+  characters: string[];
+  version: number;
+  status: string;
+  sessionCount: number;
+  build?: {
+    status: string;
+    stage: string;
+    processed: number;
+    total: number;
+    error: string;
+  } | null;
+};
+type EmotionSlot = "default" | "thinking" | "puzzled" | "happy" | "low";
+type CustomEmotion = {
+  id: string;
+  name: string;
+  description: string;
+  imageUrl: string;
+};
+type RoleCard = {
+  id: string;
+  name: string;
+  identity: string;
+  appearance: string;
+  currentState: string;
+  attributes?: Record<string, string>;
+  sourceSegmentOrders: number[];
+  imageUrl: string;
+  emotionImages: Partial<Record<EmotionSlot, string>>;
+  emotionDescriptions: Record<EmotionSlot, string>;
+  customEmotions: CustomEmotion[];
+};
+type SessionHistoryItem = {
+  role: "user" | "assistant";
+  content: string;
+  status?: "generating" | "failed";
+  error?: string;
+  model?: string;
+  mood?: string;
+};
+type Session = {
+  id: string;
+  scriptId: string;
+  title: string;
+  turn: number;
+  state?: { playerIdentity?: string };
+  history?: SessionHistoryItem[];
+};
+type Work = {
+  id: string;
+  title: string;
+  workType: WorkType;
+  summary: string;
+  settings: {
+    genre?: string;
+    world?: string;
+    playerIdentity?: string;
+    openingScene?: string;
+    tone?: string;
+  };
+  sourceSegmentCount: number;
+  scriptCount: number;
+  ragIndex?: {
+    status: string;
+    processed: number;
+    total: number;
+    error: string;
+  };
+  scripts?: Script[];
+  sessions?: Session[];
+};
+type Segment = { id: string; sequence: number; title: string };
+type SegmentPage = { items: Segment[]; page: number; totalPages: number };
+const message = (err: unknown) =>
+  err instanceof Error ? err.message : "操作失败，请重试";
+const moodNames: Record<EmotionSlot, string> = {
+  default: "默认",
+  thinking: "思考",
+  puzzled: "疑惑",
+  happy: "开心",
+  low: "低落",
+};
+
+function RolePortrait({
+  src,
+  alt,
+  name,
+  mood,
+}: {
+  src: string;
+  alt: string;
+  name: string;
+  mood: string;
+}) {
+  const [current, setCurrent] = useState(src),
+    [previous, setPrevious] = useState(""),
+    [visible, setVisible] = useState(true);
+  useEffect(() => {
+    if (src === current) return;
+    setPrevious(current);
+    setCurrent(src);
+    setVisible(false);
+    const frame = window.requestAnimationFrame(() => setVisible(true)),
+      timer = window.setTimeout(() => setPrevious(""), 320);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [src]);
+  return (
+    <div className="relative h-52 overflow-hidden rounded-xl bg-brand-soft">
+      {previous && (
+        <img
+          src={kernelUrl(previous)}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full object-contain object-top"
+        />
+      )}
+      <img
+        src={kernelUrl(current)}
+        alt={alt}
+        className={`absolute inset-0 h-full w-full object-contain object-top transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`}
+      />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent px-3 pb-2.5 pt-8 text-white">
+        <p className="text-sm font-medium">{name}</p>
+        <p className="mt-0.5 text-xs text-white/80">当前形象 · {mood}</p>
+      </div>
+    </div>
+  );
+}
+async function canUseModel() {
+  const config = await kernelGet<{ apiKeyConfigured: boolean }>(
+    "/api/settings/llm",
+  );
+  if (config.apiKeyConfigured) return true;
+  window.dispatchEvent(new Event("story:model-required"));
+  return false;
 }
 
-function StorySetup({ work, reload }:{ work:Work; reload:()=>Promise<void> }) {
-  const initial = () => ({title:work.title,summary:work.summary,genre:work.settings.genre||'',world:work.settings.world||'',player_identity:work.settings.playerIdentity||'',opening_scene:work.settings.openingScene||'',tone:work.settings.tone||''})
-  const [form,setForm] = useState(initial), [notice,setNotice] = useState('')
-  useEffect(()=>setForm(initial()),[work.id])
-  async function save(event:FormEvent) { event.preventDefault(); await kernelPatch(`/api/works/${work.id}`,form); setNotice('已保存；新建体验副本会使用这份设定。'); await reload() }
-  const field = (key:keyof ReturnType<typeof initial>,label:string,long=false) => <label className="block text-sm font-medium">{label}{long?<textarea value={form[key]} onChange={event=>setForm({...form,[key]:event.target.value})} className="mt-1.5 min-h-28 w-full rounded-lg border bg-surface p-3"/>:<input value={form[key]} onChange={event=>setForm({...form,[key]:event.target.value})} className="mt-1.5 w-full rounded-lg border bg-surface px-3 py-2"/>}</label>
-  return <form onSubmit={save} className="space-y-4 rounded-[18px] border border-border bg-workspace p-6"><p className="text-xs text-brand">故事设定</p><h2 className="text-xl font-semibold">建立可进入的世界</h2>{field('title','作品名称')}{field('summary','一句话简介',true)}<div className="grid gap-4 md:grid-cols-2">{field('genre','题材')}{field('tone','基调')}</div>{field('world','世界规则与背景',true)}{field('player_identity','玩家身份')}{field('opening_scene','开局场景',true)}<button className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">保存设定</button>{notice&&<p className="text-sm text-success">{notice}</p>}</form>
+function StorySetup({
+  work,
+  reload,
+}: {
+  work: Work;
+  reload: () => Promise<void>;
+}) {
+  const initial = () => ({
+    title: work.title,
+    summary: work.summary,
+    genre: work.settings.genre || "",
+    world: work.settings.world || "",
+    player_identity: work.settings.playerIdentity || "",
+    opening_scene: work.settings.openingScene || "",
+    tone: work.settings.tone || "",
+  });
+  const [form, setForm] = useState(initial),
+    [notice, setNotice] = useState("");
+  useEffect(() => setForm(initial()), [work.id]);
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    await kernelPatch(`/api/works/${work.id}`, form);
+    setNotice("已保存；新建体验副本会使用这份设定。");
+    await reload();
+  }
+  const field = (
+    key: keyof ReturnType<typeof initial>,
+    label: string,
+    long = false,
+  ) => (
+    <label className="block text-sm font-medium">
+      {label}
+      {long ? (
+        <textarea
+          value={form[key]}
+          onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+          className="mt-1.5 min-h-28 w-full rounded-lg border bg-surface p-3"
+        />
+      ) : (
+        <input
+          value={form[key]}
+          onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+          className="mt-1.5 w-full rounded-lg border bg-surface px-3 py-2"
+        />
+      )}
+    </label>
+  );
+  return (
+    <form
+      onSubmit={save}
+      className="space-y-4 rounded-[18px] border border-border bg-workspace p-6"
+    >
+      <p className="text-xs text-brand">故事设定</p>
+      <h2 className="text-xl font-semibold">建立可进入的世界</h2>
+      {field("title", "作品名称")}
+      {field("summary", "一句话简介", true)}
+      <div className="grid gap-4 md:grid-cols-2">
+        {field("genre", "题材")}
+        {field("tone", "基调")}
+      </div>
+      {field("world", "世界规则与背景", true)}
+      {field("player_identity", "玩家身份")}
+      {field("opening_scene", "开局场景", true)}
+      <button className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">
+        保存设定
+      </button>
+      {notice && <p className="text-sm text-success">{notice}</p>}
+    </form>
+  );
 }
 
-function ScriptPanel({ work,reload,onPlay }:{ work:Work; reload:()=>Promise<void>; onPlay:(id:string)=>void }) {
-  const imported=work.workType!=='original_story'
-  const [title,setTitle]=useState(''),[start,setStart]=useState(1),[end,setEnd]=useState(1),[player,setPlayer]=useState(work.settings.playerIdentity||''),[error,setError]=useState('')
-  const [startPage,setStartPage]=useState(1),[startOptions,setStartOptions]=useState<SegmentPage|null>(null),[endOptions,setEndOptions]=useState<Segment[]>([])
-  useEffect(()=>{setStartPage(1);setStart(1);setEnd(1);setPlayer(work.settings.playerIdentity||'')},[work.id])
-  useEffect(()=>{if(!imported)return;void kernelGet<SegmentPage>(`/api/works/${work.id}/segments?page=${startPage}&page_size=20`).then(data=>{setStartOptions(data);if(data.items[0])setStart(data.items[0].sequence)}).catch(err=>setError(message(err)))},[imported,work.id,startPage])
-  useEffect(()=>{if(!imported||!start)return;void kernelGet<SegmentPage>(`/api/works/${work.id}/segments?start_sequence=${start}&page_size=30`).then(data=>{setEndOptions(data.items);setEnd(data.items[Math.min(4,data.items.length-1)]?.sequence||start)}).catch(err=>setError(message(err)))},[imported,work.id,start])
-  function chooseStart(sequence:number){setStart(sequence);setEnd(Math.min(sequence+4,work.sourceSegmentCount))}
-  async function create(){try{if(imported&&!(await canUseModel()))return;if(imported&&(!start||!end||end<start))throw new Error('请填写有效的连续资料范围');const script=await kernelPost<Script>(`/api/works/${work.id}/scripts`,{title,start_sequence:imported?start:0,end_sequence:imported?end:0,player_identity:imported?'':player,perspective:'first'});await reload();if(script.status==='ready')onPlay(script.id)}catch(err){setError(message(err))}}
-  return <section className="rounded-[18px] border border-border bg-workspace p-6"><p className="text-xs text-brand">体验副本</p><h2 className="mt-1 text-xl font-semibold">{imported?'从资料中选择进入范围':'创建一个体验版本'}</h2><p className="mt-2 text-sm text-muted-foreground">推荐生成连续 5 章的体验副本：既保留完整的场景推进，也不会让上下文过长。人物会在副本生成后自动抽取。</p><div className="mt-5 grid gap-3 md:grid-cols-3"><label className="text-sm">名称<input value={title} onChange={event=>setTitle(event.target.value)} placeholder={imported?'可选':'开局体验'} className="mt-1 w-full rounded-lg border bg-surface px-3 py-2"/></label>{imported&&<><label className="text-sm">开始片段<select value={start} onChange={event=>chooseStart(Number(event.target.value))} className="mt-1 w-full rounded-lg border bg-surface px-3 py-2">{startOptions?.items.map(item=><option key={item.id} value={item.sequence}>第 {item.sequence} 段 · {item.title}</option>)}</select><span className="mt-1 flex items-center justify-between text-xs text-muted-foreground"><button type="button" disabled={startPage<=1} onClick={()=>setStartPage(page=>page-1)} className="disabled:opacity-40">上一页</button><span>第 {startPage} / {startOptions?.totalPages||1} 页</span><button type="button" disabled={!startOptions||startPage>=startOptions.totalPages} onClick={()=>setStartPage(page=>page+1)} className="disabled:opacity-40">下一页</button></span></label><label className="text-sm">结束片段<select value={end} onChange={event=>setEnd(Number(event.target.value))} className="mt-1 w-full rounded-lg border bg-surface px-3 py-2">{endOptions.map(item=><option key={item.id} value={item.sequence}>第 {item.sequence} 段 · {item.title}</option>)}</select><span className="mt-1 block text-xs text-muted-foreground">切换开始章节会自动定位到后第 5 章，可在 30 章内调整</span></label></>} {!imported&&<label className="text-sm">玩家身份<input value={player} onChange={event=>setPlayer(event.target.value)} placeholder="可选" className="mt-1 w-full rounded-lg border bg-surface px-3 py-2"/></label>}</div><button onClick={()=>void create()} className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">生成体验副本</button>{error&&<p className="mt-3 text-sm text-destructive">{error}</p>}<div className="mt-6 grid gap-3 md:grid-cols-2">{work.scripts?.map(script=><article key={script.id} className="rounded-xl border bg-active p-4"><p className="font-medium">{script.title}</p><p className="mt-1 text-xs text-muted-foreground">{imported?`第 ${script.sourceStart}—${script.sourceEnd} 段 · `:''}v{script.version} · {script.sessionCount} 段体验</p><button onClick={()=>onPlay(script.id)} className="mt-4 rounded-md bg-workspace px-3 py-1.5 text-xs font-medium hover:bg-hover">开始体验</button></article>)}</div></section>
+function ScriptPanel({
+  work,
+  reload,
+  onPlay,
+}: {
+  work: Work;
+  reload: () => Promise<void>;
+  onPlay: (id: string) => void;
+}) {
+  const imported = work.workType !== "original_story";
+  const [title, setTitle] = useState(""),
+    [start, setStart] = useState(1),
+    [end, setEnd] = useState(1),
+    [player, setPlayer] = useState(work.settings.playerIdentity || ""),
+    [error, setError] = useState("");
+  const [startPage, setStartPage] = useState(1),
+    [startOptions, setStartOptions] = useState<SegmentPage | null>(null),
+    [endOptions, setEndOptions] = useState<Segment[]>([]);
+  useEffect(() => {
+    setStartPage(1);
+    setStart(1);
+    setEnd(1);
+    setPlayer(work.settings.playerIdentity || "");
+  }, [work.id]);
+  useEffect(() => {
+    if (!imported) return;
+    void kernelGet<SegmentPage>(
+      `/api/works/${work.id}/segments?page=${startPage}&page_size=20`,
+    )
+      .then((data) => {
+        setStartOptions(data);
+        if (data.items[0]) setStart(data.items[0].sequence);
+      })
+      .catch((err) => setError(message(err)));
+  }, [imported, work.id, startPage]);
+  useEffect(() => {
+    if (!imported || !start) return;
+    void kernelGet<SegmentPage>(
+      `/api/works/${work.id}/segments?start_sequence=${start}&page_size=30`,
+    )
+      .then((data) => {
+        setEndOptions(data.items);
+        setEnd(
+          data.items[Math.min(4, data.items.length - 1)]?.sequence || start,
+        );
+      })
+      .catch((err) => setError(message(err)));
+  }, [imported, work.id, start]);
+  function chooseStart(sequence: number) {
+    setStart(sequence);
+    setEnd(Math.min(sequence + 4, work.sourceSegmentCount));
+  }
+  async function create() {
+    try {
+      if (imported && !(await canUseModel())) return;
+      if (imported && (!start || !end || end < start))
+        throw new Error("请填写有效的连续资料范围");
+      const script = await kernelPost<Script>(`/api/works/${work.id}/scripts`, {
+        title,
+        start_sequence: imported ? start : 0,
+        end_sequence: imported ? end : 0,
+        player_identity: imported ? "" : player,
+        perspective: "first",
+      });
+      await reload();
+      if (script.status === "ready") onPlay(script.id);
+    } catch (err) {
+      setError(message(err));
+    }
+  }
+  return (
+    <section className="rounded-[18px] border border-border bg-workspace p-6">
+      <p className="text-xs text-brand">体验副本</p>
+      <h2 className="mt-1 text-xl font-semibold">
+        {imported ? "从资料中选择进入范围" : "创建一个体验版本"}
+      </h2>
+      <p className="mt-2 text-sm text-muted-foreground">
+        推荐生成连续 5
+        章的体验副本：既保留完整的场景推进，也不会让上下文过长。人物会在副本生成后自动抽取。
+      </p>
+      <div className="mt-5 grid gap-3 md:grid-cols-3">
+        <label className="text-sm">
+          名称
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder={imported ? "可选" : "开局体验"}
+            className="mt-1 w-full rounded-lg border bg-surface px-3 py-2"
+          />
+        </label>
+        {imported && (
+          <>
+            <label className="text-sm">
+              开始片段
+              <select
+                value={start}
+                onChange={(event) => chooseStart(Number(event.target.value))}
+                className="mt-1 w-full rounded-lg border bg-surface px-3 py-2"
+              >
+                {startOptions?.items.map((item) => (
+                  <option key={item.id} value={item.sequence}>
+                    第 {item.sequence} 段 · {item.title}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
+                <button
+                  type="button"
+                  disabled={startPage <= 1}
+                  onClick={() => setStartPage((page) => page - 1)}
+                  className="disabled:opacity-40"
+                >
+                  上一页
+                </button>
+                <span>
+                  第 {startPage} / {startOptions?.totalPages || 1} 页
+                </span>
+                <button
+                  type="button"
+                  disabled={
+                    !startOptions || startPage >= startOptions.totalPages
+                  }
+                  onClick={() => setStartPage((page) => page + 1)}
+                  className="disabled:opacity-40"
+                >
+                  下一页
+                </button>
+              </span>
+            </label>
+            <label className="text-sm">
+              结束片段
+              <select
+                value={end}
+                onChange={(event) => setEnd(Number(event.target.value))}
+                className="mt-1 w-full rounded-lg border bg-surface px-3 py-2"
+              >
+                {endOptions.map((item) => (
+                  <option key={item.id} value={item.sequence}>
+                    第 {item.sequence} 段 · {item.title}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                切换开始章节会自动定位到后第 5 章，可在 30 章内调整
+              </span>
+            </label>
+          </>
+        )}{" "}
+        {!imported && (
+          <label className="text-sm">
+            玩家身份
+            <input
+              value={player}
+              onChange={(event) => setPlayer(event.target.value)}
+              placeholder="可选"
+              className="mt-1 w-full rounded-lg border bg-surface px-3 py-2"
+            />
+          </label>
+        )}
+      </div>
+      <button
+        onClick={() => void create()}
+        className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground"
+      >
+        生成体验副本
+      </button>
+      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+      <div className="mt-6 grid gap-3 md:grid-cols-2">
+        {work.scripts?.map((script) => (
+          <article key={script.id} className="rounded-xl border bg-active p-4">
+            <p className="font-medium">{script.title}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {imported
+                ? `第 ${script.sourceStart}—${script.sourceEnd} 段 · `
+                : ""}
+              v{script.version} · {script.sessionCount} 段体验
+            </p>
+            <button
+              onClick={() => onPlay(script.id)}
+              className="mt-4 rounded-md bg-workspace px-3 py-1.5 text-xs font-medium hover:bg-hover"
+            >
+              开始体验
+            </button>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
-function Experience({ work,scriptId,reload }:{ work:Work; scriptId:string; reload:()=>Promise<void> }) {
-  const [session,setSession]=useState<Session|null>(null),[input,setInput]=useState(''),[busy,setBusy]=useState(false),[starting,setStarting]=useState<'new'|'reset'|null>(null),[error,setError]=useState(''),[player,setPlayer]=useState(''),[roleCards,setRoleCards]=useState<RoleCard[]>([]),[editingSessionId,setEditingSessionId]=useState(''),[editingTitle,setEditingTitle]=useState('')
-  const script=work.scripts?.find(item=>item.id===scriptId)
-  useEffect(()=>{setSession(null);setRoleCards([]);setPlayer(script?.characters?.[0]||script?.playerIdentity||'');if(script?.status==='ready'&&work.workType!=='original_story')void kernelGet<RoleCard[]>(`/api/works/${work.id}/scripts/${script.id}/role-cards`).then(cards=>{setRoleCards(cards);setPlayer(current=>current||cards[0]?.name||'')}).catch(err=>setError(message(err)))},[scriptId,script?.status,work.id,work.workType])
-  useEffect(()=>{if(!player)return;const latest=work.sessions?.find(item=>item.scriptId===scriptId&&(item.state?.playerIdentity||script?.playerIdentity)===player);if(latest)void kernelGet<Session>(`/api/works/${work.id}/sessions/${latest.id}`).then(setSession).catch(err=>setError(message(err)))},[scriptId,player,work.id])
-  const isGenerating=!!session?.history?.some(item=>item.role==='assistant'&&item.status==='generating')
-  useEffect(()=>{if(!session?.id||!isGenerating)return;const timer=window.setInterval(()=>void kernelGet<Session>(`/api/works/${work.id}/sessions/${session.id}`).then(setSession).catch(err=>setError(message(err))),1500);return()=>window.clearInterval(timer)},[isGenerating,session?.id,work.id])
-  async function start(){if(!script)return;if(!player&&work.workType!=='original_story'){setError('请先选择玩家身份');return}try{if(!(await canUseModel()))return}catch(err){setError(message(err));return}setStarting('new');setError('');try{setSession(await kernelPost<Session>(`/api/works/${work.id}/scripts/${script.id}/sessions`,{player_identity:player}));await reload()}catch(err){setError(message(err))}finally{setStarting(null)}}
-  async function reset(){if(!session)return;try{if(!(await canUseModel()))return}catch(err){setError(message(err));return}setStarting('reset');setError('');try{setSession(await kernelPost<Session>(`/api/works/${work.id}/sessions/${session.id}/reset`,{}));await reload()}catch(err){setError(message(err))}finally{setStarting(null)}}
-  function beginRename(item:Session){setEditingSessionId(item.id);setEditingTitle(item.title)}
-  async function saveRename(item:Session){const title=editingTitle.trim();setEditingSessionId('');if(!title||title===item.title)return;try{const updated=await kernelPatch<Session>(`/api/works/${work.id}/sessions/${item.id}`,{title});setSession(current=>current?.id===item.id?updated:current);await reload()}catch(err){setError(message(err))}}
-  async function send(event:FormEvent){event.preventDefault();if(!session||!input.trim()||busy||isGenerating)return;try{if(!(await canUseModel()))return}catch(err){setError(message(err));return}const sent=input.trim(),optimistic={role:'user' as const,content:sent},placeholder={role:'assistant' as const,content:'',status:'generating' as const};setBusy(true);setError('');setInput('');setSession(current=>current?{...current,history:[...(current.history||[]),optimistic,placeholder]}:current);try{const result=await kernelStreamPost<Session>(`/api/works/${work.id}/sessions/${session.id}/turn`,{message:sent},chunk=>setSession(current=>current?{...current,history:(current.history||[]).map((item,index,rows)=>index===rows.length-1?{...item,content:item.content+chunk}:item)}:current));setSession(result);await reload()}catch(err){setSession(current=>current?{...current,history:(current.history||[]).slice(0,-2)}:current);void kernelGet<Session>(`/api/works/${work.id}/sessions/${session.id}`).then(setSession).catch(()=>setInput(sent));setError(message(err))}finally{setBusy(false)}}
-  if(!script)return <p className="text-sm text-muted-foreground">先在“体验副本”中创建或选择一个版本。</p>
-  if(script.status!=="ready"){const stages:Record<string,string>={queued:'等待构建',chapter_extraction:'正在抽取章节结构',scenario_analysis:'正在分析副本开场',historical_backtracking:'正在回溯开场所需历史',failed:'构建失败'};return <section className="rounded-[18px] border border-border bg-workspace p-6"><p className="text-xs text-brand">{stages[script.build?.stage||'']||'正在构建体验副本'}</p><h2 className="mt-1 text-xl font-semibold">正在整理角色、事件与开场上下文</h2><p className="mt-3 text-sm text-muted-foreground">{script.build?.stage==='failed'?script.build.error||'副本构建失败，请重新生成。':script.build?.stage==='chapter_extraction'?`已完成 ${script.build?.processed||0} / ${script.build?.total||0} 个片段的结构化抽取。`:'章节结构已完成，正在生成可进入的副本上下文。'}</p></section>}
-  const identities=roleCards.length?roleCards.map(card=>card.name):script.characters
-  const roleSessions=work.sessions?.filter(item=>item.scriptId===script.id&&(item.state?.playerIdentity||script.playerIdentity)===player)||[]
-  return <section className="grid min-h-[620px] grid-cols-[220px_minmax(0,1fr)_260px] overflow-hidden rounded-[18px] border border-border bg-workspace"><aside className="border-r p-4"><p className="text-xs font-medium text-muted-foreground">体验会话</p>{identities.length>0&&<div className="mt-3"><p className="text-xs text-muted-foreground">选择进入身份</p><div className="mt-2 flex flex-wrap gap-1.5">{identities.map(name=><button type="button" key={name} disabled={!!starting} onClick={()=>setPlayer(name)} className={`rounded-full border px-2.5 py-1 text-xs disabled:opacity-50 ${player===name?'border-brand bg-brand text-primary-foreground':'bg-workspace hover:bg-hover'}`}>{name}</button>)}</div></div>}<button onClick={()=>void start()} disabled={!!starting||(!player&&work.workType!=='original_story')} className="mt-3 w-full rounded-lg bg-foreground px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">{starting==='new'?'正在生成开场…':'新建体验'}</button>{session&&<button onClick={()=>void reset()} disabled={!!starting||busy||isGenerating} className="mt-2 w-full rounded-lg border px-3 py-2 text-sm hover:bg-hover disabled:opacity-50">{starting==='reset'?'正在重置开场…':'重置当前体验'}</button>}<p className="mt-5 text-xs text-muted-foreground">{player||'当前角色'}的体验记录</p>{roleSessions.map(item=><div key={item.id} className={`mt-2 flex rounded-lg text-xs ${session?.id===item.id?'bg-active font-medium':'hover:bg-hover'}`}>{editingSessionId===item.id?<input autoFocus value={editingTitle} onChange={event=>setEditingTitle(event.target.value)} onBlur={()=>void saveRename(item)} onKeyDown={event=>{if(event.key==='Enter')void saveRename(item);if(event.key==='Escape')setEditingSessionId('')}} className="min-w-0 flex-1 rounded bg-surface px-2 py-2 outline-none ring-1 ring-brand"/>:<button disabled={!!starting} onClick={()=>void kernelGet<Session>(`/api/works/${work.id}/sessions/${item.id}`).then(setSession)} onDoubleClick={()=>beginRename(item)} title="双击修改名称" className="min-w-0 flex-1 truncate px-2 py-2 text-left disabled:opacity-50">{item.title} · 第{item.turn}轮</button>}</div>)}</aside><main className="flex min-w-0 flex-col p-6"><header><p className="text-xs text-brand">正在体验</p><h2 className="text-xl font-semibold">{script.title}</h2></header>{session?<><div className="mt-6 flex-1 space-y-3 overflow-auto">{session.history?.map((item,index)=><div key={index} className={`whitespace-pre-wrap rounded-xl p-4 text-sm leading-7 ${item.role==='user'?'ml-10 bg-foreground text-primary-foreground':'bg-active'}`}>{item.role==='assistant'&&!item.content?(item.status==='failed'?<span className="text-destructive">剧情生成失败：{item.error||'请稍后重试。'}</span>:<span className="inline-flex items-center gap-2 text-muted-foreground"><span>剧情正在生成</span><span className="flex gap-1"><i className="size-1.5 animate-bounce rounded-full bg-brand"/><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]"/><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]"/></span></span>):<>{item.content}{busy&&item.role==='assistant'&&index===(session.history?.length||0)-1&&<span className="ml-2 inline-flex gap-1 align-middle"><i className="size-1.5 animate-bounce rounded-full bg-brand"/><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]"/><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]"/></span>}</>}</div>)}</div><form onSubmit={send} className="mt-5 flex gap-2"><input value={input} disabled={busy||!!starting||isGenerating} onChange={event=>setInput(event.target.value)} placeholder="描述你的动作或对白…" className="min-w-0 flex-1 rounded-lg border bg-surface px-3 py-2.5 disabled:opacity-60"/><button disabled={busy||!!starting||isGenerating||!input.trim()} className="rounded-lg bg-foreground px-4 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{isGenerating?'生成中…':busy?'发送中…':'发送'}</button></form></>:starting?<div className="grid flex-1 place-items-center"><div className="max-w-sm rounded-2xl border border-brand-border bg-brand-soft px-8 py-7 text-center"><div className="mx-auto flex w-fit gap-1"><i className="size-2 animate-bounce rounded-full bg-brand"/><i className="size-2 animate-bounce rounded-full bg-brand [animation-delay:150ms]"/><i className="size-2 animate-bounce rounded-full bg-brand [animation-delay:300ms]"/></div><p className="mt-4 text-base font-medium text-foreground">{starting==='reset'?'正在重置「'+player+'」的体验':'正在以「'+(player||'当前身份')+'」进入场景'}</p><p className="mt-2 text-sm leading-6 text-muted-foreground">正在生成属于这个角色的开场叙事，请稍候。</p></div></div>:<div className="grid flex-1 place-items-center text-sm text-muted-foreground">选择身份后，开始一段新体验。</div>}{error&&<p className="mt-3 text-sm text-destructive">{error}</p>}</main><aside className="border-l bg-active p-4"><p className="text-xs text-muted-foreground">角色资料</p>{roleCards.find(card=>card.name===player)?<div className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground"><p className="text-sm font-medium text-foreground">{player}</p>{(['identity','affiliation','ability','currentState'] as const).map(key=>roleCards.find(card=>card.name===player)?.[key]&&<p key={key}>{roleCards.find(card=>card.name===player)?.[key]}</p>)}</div>:<p className="mt-3 text-sm font-medium">{session?.state?.playerIdentity||player||script.playerIdentity||'玩家身份未设定'}</p>}<p className="mt-4 text-xs text-muted-foreground">体验版本 v{script.version}<br/>仅自己可体验</p></aside></section>
+function Experience({
+  work,
+  scriptId,
+  reload,
+}: {
+  work: Work;
+  scriptId: string;
+  reload: () => Promise<void>;
+}) {
+  const [session, setSession] = useState<Session | null>(null),
+    [input, setInput] = useState(""),
+    [busy, setBusy] = useState(false),
+    [starting, setStarting] = useState<"new" | "reset" | null>(null),
+    [error, setError] = useState(""),
+    [player, setPlayer] = useState(""),
+    [roleCards, setRoleCards] = useState<RoleCard[]>([]),
+    [activeMood, setActiveMood] = useState("default"),
+    [editingSessionId, setEditingSessionId] = useState(""),
+    [editingTitle, setEditingTitle] = useState("");
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const script = work.scripts?.find((item) => item.id === scriptId);
+  useEffect(() => {
+    setSession(null);
+    setRoleCards([]);
+    setActiveMood("default");
+    setPlayer(script?.characters?.[0] || script?.playerIdentity || "");
+    if (script?.status === "ready" && work.workType !== "original_story")
+      void kernelGet<RoleCard[]>(
+        `/api/works/${work.id}/scripts/${script.id}/role-cards`,
+      )
+        .then((cards) => {
+          setRoleCards(cards);
+          setPlayer((current) => current || cards[0]?.name || "");
+        })
+        .catch((err) => setError(message(err)));
+  }, [scriptId, script?.status, work.id, work.workType]);
+  useEffect(() => {
+    if (!player) return;
+    const latest = work.sessions?.find(
+      (item) =>
+        item.scriptId === scriptId &&
+        (item.state?.playerIdentity || script?.playerIdentity) === player,
+    );
+    if (latest)
+      void kernelGet<Session>(`/api/works/${work.id}/sessions/${latest.id}`)
+        .then(setSession)
+        .catch((err) => setError(message(err)));
+  }, [scriptId, player, work.id]);
+  useEffect(() => setActiveMood("default"), [player]);
+  const isGenerating = !!session?.history?.some(
+    (item) => item.role === "assistant" && item.status === "generating",
+  );
+  useEffect(() => {
+    const latest = [...(session?.history || [])]
+      .reverse()
+      .find((item) => item.role === "assistant");
+    if (latest?.status === "generating") return;
+    setActiveMood(latest?.mood || "default");
+  }, [session?.id, session?.history]);
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [session?.id, session?.history]);
+  useEffect(() => {
+    if (!session?.id || !isGenerating || busy) return;
+    const timer = window.setInterval(
+      () =>
+        void kernelGet<Session>(`/api/works/${work.id}/sessions/${session.id}`)
+          .then(setSession)
+          .catch((err) => setError(message(err))),
+      1500,
+    );
+    return () => window.clearInterval(timer);
+  }, [busy, isGenerating, session?.id, work.id]);
+  async function start() {
+    if (!script) return;
+    if (!player && work.workType !== "original_story") {
+      setError("请先选择玩家身份");
+      return;
+    }
+    try {
+      if (!(await canUseModel())) return;
+    } catch (err) {
+      setError(message(err));
+      return;
+    }
+    setStarting("new");
+    setError("");
+    try {
+      setSession(
+        await kernelPost<Session>(
+          `/api/works/${work.id}/scripts/${script.id}/sessions`,
+          { player_identity: player },
+        ),
+      );
+      await reload();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setStarting(null);
+    }
+  }
+  async function reset() {
+    if (!session) return;
+    try {
+      if (!(await canUseModel())) return;
+    } catch (err) {
+      setError(message(err));
+      return;
+    }
+    setStarting("reset");
+    setError("");
+    try {
+      setSession(
+        await kernelPost<Session>(
+          `/api/works/${work.id}/sessions/${session.id}/reset`,
+          {},
+        ),
+      );
+      await reload();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setStarting(null);
+    }
+  }
+  function beginRename(item: Session) {
+    setEditingSessionId(item.id);
+    setEditingTitle(item.title);
+  }
+  async function saveRename(item: Session) {
+    const title = editingTitle.trim();
+    setEditingSessionId("");
+    if (!title || title === item.title) return;
+    try {
+      const updated = await kernelPatch<Session>(
+        `/api/works/${work.id}/sessions/${item.id}`,
+        { title },
+      );
+      setSession((current) => (current?.id === item.id ? updated : current));
+      await reload();
+    } catch (err) {
+      setError(message(err));
+    }
+  }
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    if (!session || !input.trim() || busy || isGenerating) return;
+    try {
+      if (!(await canUseModel())) return;
+    } catch (err) {
+      setError(message(err));
+      return;
+    }
+    const sent = input.trim(),
+      optimistic = { role: "user" as const, content: sent },
+      placeholder = {
+        role: "assistant" as const,
+        content: "",
+        status: "generating" as const,
+      };
+    setBusy(true);
+    setError("");
+    setInput("");
+    setSession((current) =>
+      current
+        ? {
+            ...current,
+            history: [...(current.history || []), optimistic, placeholder],
+          }
+        : current,
+    );
+    try {
+      const result = await kernelStreamPost<Session>(
+        `/api/works/${work.id}/sessions/${session.id}/turn`,
+        { message: sent },
+        (chunk) =>
+          setSession((current) =>
+            current
+              ? {
+                  ...current,
+                  history: (current.history || []).map((item, index, rows) =>
+                    index === rows.length - 1
+                      ? { ...item, content: item.content + chunk }
+                      : item,
+                  ),
+                }
+              : current,
+          ),
+        (name, payload) => {
+          if (name === "mood" && typeof payload.mood === "string")
+            setActiveMood(payload.mood);
+        },
+      );
+      setSession(result);
+      await reload();
+    } catch (err) {
+      setSession((current) =>
+        current
+          ? { ...current, history: (current.history || []).slice(0, -2) }
+          : current,
+      );
+      void kernelGet<Session>(`/api/works/${work.id}/sessions/${session.id}`)
+        .then(setSession)
+        .catch(() => setInput(sent));
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (!script)
+    return (
+      <p className="text-sm text-muted-foreground">
+        先在“体验副本”中创建或选择一个版本。
+      </p>
+    );
+  if (script.status !== "ready") {
+    const stages: Record<string, string> = {
+      queued: "等待构建",
+      chapter_extraction: "正在抽取章节结构",
+      scenario_analysis: "正在分析副本开场",
+      historical_backtracking: "正在回溯开场所需历史",
+      failed: "构建失败",
+    };
+    return (
+      <section className="rounded-[18px] border border-border bg-workspace p-6">
+        <p className="text-xs text-brand">
+          {stages[script.build?.stage || ""] || "正在构建体验副本"}
+        </p>
+        <h2 className="mt-1 text-xl font-semibold">
+          正在整理角色、事件与开场上下文
+        </h2>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {script.build?.stage === "failed"
+            ? script.build.error || "副本构建失败，请重新生成。"
+            : script.build?.stage === "chapter_extraction"
+              ? `已完成 ${script.build?.processed || 0} / ${script.build?.total || 0} 个片段的结构化抽取。`
+              : "章节结构已完成，正在生成可进入的副本上下文。"}
+        </p>
+      </section>
+    );
+  }
+  const identities = roleCards.length
+    ? roleCards.map((card) => card.name)
+    : script.characters;
+  const roleSessions =
+    work.sessions?.filter(
+      (item) =>
+        item.scriptId === script.id &&
+        (item.state?.playerIdentity || script.playerIdentity) === player,
+    ) || [];
+  const activeCard = roleCards.find((card) => card.name === player);
+  const customMood = activeCard?.customEmotions.find(
+    (item) => item.id === activeMood,
+  );
+  const portraitPath =
+    customMood?.imageUrl ||
+    activeCard?.emotionImages[activeMood as EmotionSlot] ||
+    activeCard?.imageUrl ||
+    "";
+  const moodLabel =
+    customMood?.name ||
+    moodNames[activeMood as EmotionSlot] ||
+    moodNames.default;
+  const moodDescription =
+    customMood?.description ||
+    activeCard?.emotionDescriptions[activeMood as EmotionSlot] ||
+    activeCard?.emotionDescriptions.default ||
+    "";
+  return (
+    <section className="grid h-[calc(100vh-9rem)] min-h-[560px] max-h-[760px] grid-cols-[220px_minmax(0,1fr)_260px] overflow-hidden rounded-[18px] border border-border bg-workspace">
+      <aside className="min-h-0 overflow-y-auto border-r p-4">
+        <p className="text-xs font-medium text-muted-foreground">体验会话</p>
+        {identities.length > 0 && (
+          <div className="mt-3">
+            <p className="text-xs text-muted-foreground">选择进入身份</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {identities.map((name) => (
+                <button
+                  type="button"
+                  key={name}
+                  disabled={!!starting}
+                  onClick={() => setPlayer(name)}
+                  className={`rounded-full border px-2.5 py-1 text-xs disabled:opacity-50 ${player === name ? "border-brand bg-brand text-primary-foreground" : "bg-workspace hover:bg-hover"}`}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <button
+          onClick={() => void start()}
+          disabled={
+            !!starting || (!player && work.workType !== "original_story")
+          }
+          className="mt-3 w-full rounded-lg bg-foreground px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+        >
+          {starting === "new" ? "正在生成开场…" : "新建体验"}
+        </button>
+        {session && (
+          <button
+            onClick={() => void reset()}
+            disabled={!!starting || busy || isGenerating}
+            className="mt-2 w-full rounded-lg border px-3 py-2 text-sm hover:bg-hover disabled:opacity-50"
+          >
+            {starting === "reset" ? "正在重置开场…" : "重置当前体验"}
+          </button>
+        )}
+        <p className="mt-5 text-xs text-muted-foreground">
+          {player || "当前角色"}的体验记录
+        </p>
+        {roleSessions.map((item) => (
+          <div
+            key={item.id}
+            className={`mt-2 flex rounded-lg text-xs ${session?.id === item.id ? "bg-active font-medium" : "hover:bg-hover"}`}
+          >
+            {editingSessionId === item.id ? (
+              <input
+                autoFocus
+                value={editingTitle}
+                onChange={(event) => setEditingTitle(event.target.value)}
+                onBlur={() => void saveRename(item)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveRename(item);
+                  if (event.key === "Escape") setEditingSessionId("");
+                }}
+                className="min-w-0 flex-1 rounded bg-surface px-2 py-2 outline-none ring-1 ring-brand"
+              />
+            ) : (
+              <button
+                disabled={!!starting}
+                onClick={() =>
+                  void kernelGet<Session>(
+                    `/api/works/${work.id}/sessions/${item.id}`,
+                  ).then(setSession)
+                }
+                onDoubleClick={() => beginRename(item)}
+                title="双击修改名称"
+                className="min-w-0 flex-1 truncate px-2 py-2 text-left disabled:opacity-50"
+              >
+                {item.title} · 第{item.turn}轮
+              </button>
+            )}
+          </div>
+        ))}
+      </aside>
+      <main className="flex min-h-0 min-w-0 flex-col p-6">
+        <header>
+          <p className="text-xs text-brand">正在体验</p>
+          <h2 className="text-xl font-semibold">{script.title}</h2>
+        </header>
+        {session ? (
+          <>
+            <div
+              ref={messageListRef}
+              className="mt-6 min-h-0 flex-1 space-y-3 overflow-y-auto"
+            >
+              {session.history?.map((item, index) => (
+                <div
+                  key={index}
+                  className={`whitespace-pre-wrap rounded-xl p-4 text-sm leading-7 ${item.role === "user" ? "ml-10 bg-foreground text-primary-foreground" : "bg-active"}`}
+                >
+                  {item.role === "assistant" && !item.content ? (
+                    item.status === "failed" ? (
+                      <span className="text-destructive">
+                        剧情生成失败：{item.error || "请稍后重试。"}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-2 text-muted-foreground">
+                        <span>剧情正在生成</span>
+                        <span className="flex gap-1">
+                          <i className="size-1.5 animate-bounce rounded-full bg-brand" />
+                          <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" />
+                          <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" />
+                        </span>
+                      </span>
+                    )
+                  ) : (
+                    <>
+                      {item.content}
+                      {busy &&
+                        item.role === "assistant" &&
+                        index === (session.history?.length || 0) - 1 && (
+                          <span className="ml-2 inline-flex gap-1 align-middle">
+                            <i className="size-1.5 animate-bounce rounded-full bg-brand" />
+                            <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" />
+                            <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" />
+                          </span>
+                        )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+            <form onSubmit={send} className="mt-5 flex gap-2">
+              <input
+                value={input}
+                disabled={busy || !!starting || isGenerating}
+                onChange={(event) => setInput(event.target.value)}
+                placeholder="描述你的动作或对白…"
+                className="min-w-0 flex-1 rounded-lg border bg-surface px-3 py-2.5 disabled:opacity-60"
+              />
+              <button
+                disabled={busy || !!starting || isGenerating || !input.trim()}
+                className="rounded-lg bg-foreground px-4 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isGenerating ? "生成中…" : busy ? "发送中…" : "发送"}
+              </button>
+            </form>
+          </>
+        ) : starting ? (
+          <div className="grid flex-1 place-items-center">
+            <div className="max-w-sm rounded-2xl border border-brand-border bg-brand-soft px-8 py-7 text-center">
+              <div className="mx-auto flex w-fit gap-1">
+                <i className="size-2 animate-bounce rounded-full bg-brand" />
+                <i className="size-2 animate-bounce rounded-full bg-brand [animation-delay:150ms]" />
+                <i className="size-2 animate-bounce rounded-full bg-brand [animation-delay:300ms]" />
+              </div>
+              <p className="mt-4 text-base font-medium text-foreground">
+                {starting === "reset"
+                  ? "正在重置「" + player + "」的体验"
+                  : "正在以「" + (player || "当前身份") + "」进入场景"}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                正在生成属于这个角色的开场叙事，请稍候。
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="grid flex-1 place-items-center text-sm text-muted-foreground">
+            选择身份后，开始一段新体验。
+          </div>
+        )}
+        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+      </main>
+      <aside className="min-h-0 overflow-y-auto border-l bg-active p-4">
+        <p className="text-xs text-muted-foreground">角色资料</p>
+        {activeCard ? (
+          <div className="mt-3 space-y-2 text-xs leading-5 text-muted-foreground">
+            {portraitPath ? (
+              <RolePortrait
+                src={portraitPath}
+                alt={`${player} · ${moodLabel}形象`}
+                name={player}
+                mood={moodLabel}
+              />
+            ) : (
+              <div className="grid h-44 place-items-center rounded-xl border border-dashed bg-workspace px-4 text-center text-xs text-muted-foreground">
+                该角色尚未上传默认形象
+              </div>
+            )}
+            <p className="text-sm font-medium text-foreground">{player}</p>
+            <div className="rounded-lg border bg-workspace px-2.5 py-2">
+              <p className="font-medium text-foreground">
+                当前形象 · {moodLabel}
+              </p>
+              {moodDescription && <p className="mt-1">{moodDescription}</p>}
+            </div>
+            {[
+              activeCard.identity,
+              activeCard.attributes?.affiliation,
+              activeCard.attributes?.ability,
+              activeCard.currentState,
+            ]
+              .filter(Boolean)
+              .map((item) => (
+                <p key={item}>{item}</p>
+              ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm font-medium">
+            {session?.state?.playerIdentity ||
+              player ||
+              script.playerIdentity ||
+              "玩家身份未设定"}
+          </p>
+        )}
+        <p className="mt-4 text-xs text-muted-foreground">
+          体验版本 v{script.version}
+          <br />
+          仅自己可体验
+        </p>
+      </aside>
+    </section>
+  );
 }
 
-export function RuntimeWorkbench(){
-  const [params]=useSearchParams(),navigate=useNavigate(),id=params.get('id')||''
-  const tabParam=params.get('tab'),routeSection=['overview','source','scripts','experience','characters'].includes(tabParam||'')?tabParam||'overview':'overview',routeScriptId=params.get('script')||'',petChatCardId=params.get('petChatCard')||''
-  const [work,setWork]=useState<Work|null>(null),[section,setSection]=useState(routeSection),[scriptId,setScriptId]=useState(routeScriptId),[error,setError]=useState(''),[buildingKnowledge,setBuildingKnowledge]=useState(false),[ragPreview,setRagPreview]=useState<RagIndexPreview|null>(null)
-  const reload=async()=>{try{setWork(await kernelGet<Work>(`/api/works/${id}`))}catch(err){setError(message(err))}}
-  useEffect(()=>{if(id)void reload()},[id])
-  useEffect(()=>{setSection(routeSection);if(routeScriptId)setScriptId(routeScriptId)},[routeSection,routeScriptId])
-  useEffect(()=>{if(work?.scripts?.[0]&&!scriptId)setScriptId(work.scripts[0].id)},[work?.id,work?.scripts?.[0]?.id])
-  const buildingKey=[work?.scripts?.filter(script=>script.status==='queued'||script.status==='building').map(script=>script.id).join(',')||'',work?.ragIndex?.status==='queued'||work?.ragIndex?.status==='building'?work.ragIndex.status:''].filter(Boolean).join(',')
-  useEffect(()=>{if(!buildingKey)return;const timer=window.setInterval(()=>void reload(),1500);return()=>window.clearInterval(timer)},[buildingKey,id])
-  if(!work)return <main className="p-8 text-sm text-muted-foreground">正在载入作品… {error}</main>
-  const workId=work.id,imported=work.workType!=='original_story',labels:Record<WorkType,string>={original_story:'原创故事',imported_novel:'导入小说',imported_screenwork:'影视灵感'}
-  function selectSection(next:string,nextScriptId=scriptId){const query=new URLSearchParams({id,tab:next});if(next==='experience'&&nextScriptId)query.set('script',nextScriptId);navigate(`/workbench?${query.toString()}`)}
-  async function buildKnowledge(){try{setError('');const config=await kernelGet<{embeddingBaseUrl:string;embeddingModel:string;embeddingApiKeyConfigured:boolean}>('/api/settings/llm');if(!config.embeddingBaseUrl||!config.embeddingModel||!config.embeddingApiKeyConfigured){const query=new URLSearchParams({id,tab:'overview'});navigate(`/settings?rag=1&returnTo=${encodeURIComponent(`/workbench?${query.toString()}`)}`);return}setBuildingKnowledge(true);setRagPreview(await kernelGet<RagIndexPreview>(`/api/works/${workId}/rag-index/preview`))}catch(err){setError(message(err))}finally{setBuildingKnowledge(false)}}
-  async function confirmKnowledgeBuild(){try{setBuildingKnowledge(true);setRagPreview(null);await kernelPost(`/api/works/${workId}/rag-index`,{});await reload()}catch(err){setError(message(err))}finally{setBuildingKnowledge(false)}}
-  const body=section==='source'?(imported?<SourceMaterialPanel workId={work.id} total={work.sourceSegmentCount}/>:<StorySetup work={work} reload={reload}/>):section==='scripts'?<ScriptPanel work={work} reload={reload} onPlay={value=>{setScriptId(value);selectSection('experience',value)}}/>:section==='characters'?<RoleCards workId={work.id} scriptId={scriptId} autoOpenCardId={petChatCardId}/>:section==='experience'?<Experience work={work} scriptId={scriptId} reload={reload}/>:<section className="rounded-[18px] border border-border bg-workspace p-7"><span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs text-brand">{labels[work.workType]}</span><h1 className="mt-5 text-3xl font-semibold">{work.title}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">{work.summary||'这是一个仅自己可体验的作品。'}</p><div className="mt-7 grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-active p-4"><p className="text-xs text-muted-foreground">隐私</p><p className="mt-1 font-medium">仅自己可体验</p></div><div className="rounded-xl bg-active p-4"><p className="text-xs text-muted-foreground">体验副本</p><p className="mt-1 font-medium">{work.scriptCount} 个</p></div><div className="rounded-xl bg-active p-4"><p className="text-xs text-muted-foreground">来源资料</p><p className="mt-1 font-medium">{imported?`${work.sourceSegmentCount} 段`:'原创设定'}</p></div></div><div className="mt-7 flex flex-wrap gap-2"><button onClick={()=>selectSection('scripts')} className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">生成体验副本</button>{imported&&<button onClick={()=>void buildKnowledge()} disabled={buildingKnowledge||work.ragIndex?.status==='queued'||work.ragIndex?.status==='building'} className="rounded-lg border px-4 py-2 text-sm hover:bg-hover disabled:opacity-50">{work.ragIndex?.status==='ready'?'查看知识库状态':work.ragIndex?.status==='queued'?'知识库排队中…':work.ragIndex?.status==='building'?`知识库构建中 ${work.ragIndex.processed}/${work.ragIndex.total}`:buildingKnowledge?'正在检查配置…':'构建角色知识库'}</button>}</div>{imported&&<p className="mt-3 text-xs text-muted-foreground">知识库用于让角色和剧情了解副本开始前的原文历史。</p>}</section>
-  const navigation=[['overview','概览'],['source',imported?'来源资料':'故事设定'],['scripts','体验副本'],['experience','开始体验'],['characters','角色']]
-  return <div className="flex min-h-screen flex-col bg-background"><header className="flex h-14 items-center justify-between border-b bg-workspace px-4"><button onClick={()=>navigate('/')} className="flex items-center gap-1.5 text-sm hover:opacity-70"><ArrowLeft className="size-4"/>我的作品</button><div className="text-center"><p className="text-sm font-semibold">{work.title}</p><p className="text-[11px] text-muted-foreground">作品工作台 · 仅自己可体验</p></div><div className="flex items-center gap-1"><button type="button" title="加入讨论群" aria-label="加入讨论群" onClick={()=>window.dispatchEvent(new Event('story:open-community-qr'))} className="rounded-lg p-2 hover:bg-hover"><QrCode className="size-4"/></button><Link to="/settings" title="设置" aria-label="设置" className="rounded-lg p-2 hover:bg-hover"><Settings className="size-4"/></Link></div></header><div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]"><aside className="border-r bg-workspace p-3">{navigation.map(([key,label])=><button key={key} onClick={()=>selectSection(key)} className={`mb-1 block w-full rounded-lg px-3 py-2 text-left text-sm ${section===key?'bg-active font-medium':'hover:bg-hover'}`}>{label}</button>)}</aside><main className="min-w-0 overflow-auto p-5">{body}</main></div>{ragPreview&&<RagIndexBuildDialog preview={ragPreview} onClose={()=>setRagPreview(null)} onConfirm={()=>void confirmKnowledgeBuild()}/>}</div>
+export function RuntimeWorkbench() {
+  const [params] = useSearchParams(),
+    navigate = useNavigate(),
+    id = params.get("id") || "";
+  const tabParam = params.get("tab"),
+    routeSection = [
+      "overview",
+      "source",
+      "scripts",
+      "experience",
+      "characters",
+    ].includes(tabParam || "")
+      ? tabParam || "overview"
+      : "overview",
+    routeScriptId = params.get("script") || "",
+    petChatCardId = params.get("petChatCard") || "";
+  const [work, setWork] = useState<Work | null>(null),
+    [section, setSection] = useState(routeSection),
+    [scriptId, setScriptId] = useState(routeScriptId),
+    [error, setError] = useState(""),
+    [buildingKnowledge, setBuildingKnowledge] = useState(false),
+    [ragPreview, setRagPreview] = useState<RagIndexPreview | null>(null);
+  const reload = async () => {
+    try {
+      setWork(await kernelGet<Work>(`/api/works/${id}`));
+    } catch (err) {
+      setError(message(err));
+    }
+  };
+  useEffect(() => {
+    if (id) void reload();
+  }, [id]);
+  useEffect(() => {
+    setSection(routeSection);
+    if (routeScriptId) setScriptId(routeScriptId);
+  }, [routeSection, routeScriptId]);
+  useEffect(() => {
+    if (work?.scripts?.[0] && !scriptId) setScriptId(work.scripts[0].id);
+  }, [work?.id, work?.scripts?.[0]?.id]);
+  const buildingKey = [
+    work?.scripts
+      ?.filter(
+        (script) => script.status === "queued" || script.status === "building",
+      )
+      .map((script) => script.id)
+      .join(",") || "",
+    work?.ragIndex?.status === "queued" || work?.ragIndex?.status === "building"
+      ? work.ragIndex.status
+      : "",
+  ]
+    .filter(Boolean)
+    .join(",");
+  useEffect(() => {
+    if (!buildingKey) return;
+    const timer = window.setInterval(() => void reload(), 1500);
+    return () => window.clearInterval(timer);
+  }, [buildingKey, id]);
+  if (!work)
+    return (
+      <main className="p-8 text-sm text-muted-foreground">
+        正在载入作品… {error}
+      </main>
+    );
+  const workId = work.id,
+    imported = work.workType !== "original_story",
+    labels: Record<WorkType, string> = {
+      original_story: "原创故事",
+      imported_novel: "导入小说",
+      imported_screenwork: "影视灵感",
+    };
+  function selectSection(next: string, nextScriptId = scriptId) {
+    const query = new URLSearchParams({ id, tab: next });
+    if (next === "experience" && nextScriptId)
+      query.set("script", nextScriptId);
+    navigate(`/workbench?${query.toString()}`);
+  }
+  async function buildKnowledge() {
+    try {
+      setError("");
+      const config = await kernelGet<{
+        embeddingBaseUrl: string;
+        embeddingModel: string;
+        embeddingApiKeyConfigured: boolean;
+      }>("/api/settings/llm");
+      if (
+        !config.embeddingBaseUrl ||
+        !config.embeddingModel ||
+        !config.embeddingApiKeyConfigured
+      ) {
+        const query = new URLSearchParams({ id, tab: "overview" });
+        navigate(
+          `/settings?rag=1&returnTo=${encodeURIComponent(`/workbench?${query.toString()}`)}`,
+        );
+        return;
+      }
+      setBuildingKnowledge(true);
+      setRagPreview(
+        await kernelGet<RagIndexPreview>(
+          `/api/works/${workId}/rag-index/preview`,
+        ),
+      );
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBuildingKnowledge(false);
+    }
+  }
+  async function confirmKnowledgeBuild() {
+    try {
+      setBuildingKnowledge(true);
+      setRagPreview(null);
+      await kernelPost(`/api/works/${workId}/rag-index`, {});
+      await reload();
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBuildingKnowledge(false);
+    }
+  }
+  const body =
+    section === "source" ? (
+      imported ? (
+        <SourceMaterialPanel workId={work.id} total={work.sourceSegmentCount} />
+      ) : (
+        <StorySetup work={work} reload={reload} />
+      )
+    ) : section === "scripts" ? (
+      <ScriptPanel
+        work={work}
+        reload={reload}
+        onPlay={(value) => {
+          setScriptId(value);
+          selectSection("experience", value);
+        }}
+      />
+    ) : section === "characters" ? (
+      <RoleCards
+        workId={work.id}
+        scriptId={scriptId}
+        autoOpenCardId={petChatCardId}
+      />
+    ) : section === "experience" ? (
+      <Experience work={work} scriptId={scriptId} reload={reload} />
+    ) : (
+      <section className="rounded-[18px] border border-border bg-workspace p-7">
+        <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs text-brand">
+          {labels[work.workType]}
+        </span>
+        <h1 className="mt-5 text-3xl font-semibold">{work.title}</h1>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+          {work.summary || "这是一个仅自己可体验的作品。"}
+        </p>
+        <div className="mt-7 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl bg-active p-4">
+            <p className="text-xs text-muted-foreground">隐私</p>
+            <p className="mt-1 font-medium">仅自己可体验</p>
+          </div>
+          <div className="rounded-xl bg-active p-4">
+            <p className="text-xs text-muted-foreground">体验副本</p>
+            <p className="mt-1 font-medium">{work.scriptCount} 个</p>
+          </div>
+          <div className="rounded-xl bg-active p-4">
+            <p className="text-xs text-muted-foreground">来源资料</p>
+            <p className="mt-1 font-medium">
+              {imported ? `${work.sourceSegmentCount} 段` : "原创设定"}
+            </p>
+          </div>
+        </div>
+        <div className="mt-7 flex flex-wrap gap-2">
+          <button
+            onClick={() => selectSection("scripts")}
+            className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground"
+          >
+            生成体验副本
+          </button>
+          {imported && (
+            <button
+              onClick={() => void buildKnowledge()}
+              disabled={
+                buildingKnowledge ||
+                work.ragIndex?.status === "queued" ||
+                work.ragIndex?.status === "building"
+              }
+              className="rounded-lg border px-4 py-2 text-sm hover:bg-hover disabled:opacity-50"
+            >
+              {work.ragIndex?.status === "ready"
+                ? "查看知识库状态"
+                : work.ragIndex?.status === "queued"
+                  ? "知识库排队中…"
+                  : work.ragIndex?.status === "building"
+                    ? `知识库构建中 ${work.ragIndex.processed}/${work.ragIndex.total}`
+                    : buildingKnowledge
+                      ? "正在检查配置…"
+                      : "构建角色知识库"}
+            </button>
+          )}
+        </div>
+        {imported && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            知识库用于让角色和剧情了解副本开始前的原文历史。
+          </p>
+        )}
+      </section>
+    );
+  const navigation = [
+    ["overview", "概览"],
+    ["source", imported ? "来源资料" : "故事设定"],
+    ["scripts", "体验副本"],
+    ["experience", "开始体验"],
+    ["characters", "角色"],
+  ];
+  return (
+    <div className="flex min-h-screen flex-col bg-background">
+      <header className="flex h-14 items-center justify-between border-b bg-workspace px-4">
+        <button
+          onClick={() => navigate("/")}
+          className="flex items-center gap-1.5 text-sm hover:opacity-70"
+        >
+          <ArrowLeft className="size-4" />
+          我的作品
+        </button>
+        <div className="text-center">
+          <p className="text-sm font-semibold">{work.title}</p>
+          <p className="text-[11px] text-muted-foreground">
+            作品工作台 · 仅自己可体验
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            title="加入讨论群"
+            aria-label="加入讨论群"
+            onClick={() =>
+              window.dispatchEvent(new Event("story:open-community-qr"))
+            }
+            className="rounded-lg p-2 hover:bg-hover"
+          >
+            <QrCode className="size-4" />
+          </button>
+          <Link
+            to="/settings"
+            title="设置"
+            aria-label="设置"
+            className="rounded-lg p-2 hover:bg-hover"
+          >
+            <Settings className="size-4" />
+          </Link>
+        </div>
+      </header>
+      <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)]">
+        <aside className="border-r bg-workspace p-3">
+          {navigation.map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => selectSection(key)}
+              className={`mb-1 block w-full rounded-lg px-3 py-2 text-left text-sm ${section === key ? "bg-active font-medium" : "hover:bg-hover"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </aside>
+        <main className="min-w-0 overflow-auto p-5">{body}</main>
+      </div>
+      {ragPreview && (
+        <RagIndexBuildDialog
+          preview={ragPreview}
+          onClose={() => setRagPreview(null)}
+          onConfirm={() => void confirmKnowledgeBuild()}
+        />
+      )}
+    </div>
+  );
 }
