@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,json,os,re
+import asyncio,json,os,re,time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timezone
 from pathlib import Path
@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+import httpx
 import models
 from auth import CurrentUser,get_current_user
 from database import Base,SessionLocal,engine,get_db,reset_legacy_schema,run_schema_migrations
@@ -283,7 +284,20 @@ async def llm_test(body:LLMConfigUpdateRequest,current_user:CurrentUser=Depends(
 def community_qr_get():
  url=os.getenv("NOVEL_COMMUNITY_QR_IMAGE_URL",DEFAULT_COMMUNITY_QR_IMAGE_URL).strip()
  if url and not url.startswith(("https://","http://")):raise HTTPException(500,"NOVEL_COMMUNITY_QR_IMAGE_URL 必须是公开的 http(s) 图片地址")
- return out({"imageUrl":url})
+ return out({"imageUrl":"/api/community-qr/image"})
+@app.get("/api/community-qr/image")
+def community_qr_image():
+ url=os.getenv("NOVEL_COMMUNITY_QR_IMAGE_URL",DEFAULT_COMMUNITY_QR_IMAGE_URL).strip()
+ if not url.startswith(("https://","http://")):raise HTTPException(500,"NOVEL_COMMUNITY_QR_IMAGE_URL 必须是公开的 http(s) 图片地址")
+ separator="&" if "?" in url else "?"
+ try:
+  remote=httpx.get(f"{url}{separator}_={time.time_ns()}",headers={"Cache-Control":"no-cache","Pragma":"no-cache"},follow_redirects=True,timeout=15,trust_env=False)
+  remote.raise_for_status()
+ except httpx.HTTPError as exc:
+  raise HTTPException(502,"群二维码暂时无法获取，请稍后重试") from exc
+ content_type=remote.headers.get("content-type","image/png").split(";",1)[0]
+ if not content_type.startswith("image/"):raise HTTPException(502,"群二维码源返回的不是图片")
+ return Response(content=remote.content,media_type=content_type,headers={"Cache-Control":"no-store, max-age=0","Pragma":"no-cache"})
 @app.get("/api/works")
 def works(current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  rows=db.query(models.Work).filter_by(platform_user_id=current_user.platform_user_id).order_by(models.Work.updated_at.desc()).all();return lst([wd(x,{"segments":db.query(models.SourceSegment).filter_by(work_id=x.id).count(),"scripts":db.query(models.ExperienceScript).filter_by(work_id=x.id).count()}) for x in rows])

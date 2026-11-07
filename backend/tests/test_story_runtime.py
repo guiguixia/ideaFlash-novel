@@ -18,11 +18,26 @@ def test_known_provider_options_disable_thinking_mode():
     assert _model_request_options(LLMConfig(base_url="https://api.example.com", model="example-chat")) == {}
 
 
-def test_community_qr_uses_read_only_deployment_config():
+def test_community_qr_uses_backend_proxy():
     client = TestClient(app)
     with patch.dict(os.environ, {"NOVEL_COMMUNITY_QR_IMAGE_URL": "https://cdn.example.com/community-qr.png"}):
         current = client.get("/api/community-qr")
-    assert current.json()["data"]["imageUrl"] == "https://cdn.example.com/community-qr.png"
+    assert current.json()["data"]["imageUrl"] == "/api/community-qr/image"
+
+
+def test_community_qr_proxy_disables_cache():
+    client = TestClient(app)
+    upstream = type("Upstream", (), {
+        "content": b"png-content",
+        "headers": {"content-type": "image/png"},
+        "raise_for_status": lambda self: None,
+    })()
+    with patch.dict(os.environ, {"NOVEL_COMMUNITY_QR_IMAGE_URL": "https://cdn.example.com/community-qr.png"}), patch("main.httpx.get", return_value=upstream) as get:
+        response = client.get("/api/community-qr/image")
+    assert response.status_code == 200
+    assert response.content == b"png-content"
+    assert response.headers["cache-control"] == "no-store, max-age=0"
+    assert get.call_args.args[0].startswith("https://cdn.example.com/community-qr.png?_=")
 
 
 def test_original_story_can_run_private_experience():

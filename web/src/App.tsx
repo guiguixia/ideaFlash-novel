@@ -7,7 +7,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router";
-import { kernelGet, kernelPatch, kernelPost } from "./lib/kernel-api";
+import { kernelGet, kernelPatch, kernelPost, kernelUrl } from "./lib/kernel-api";
 import { LibraryHome } from "./LibraryHome";
 import { RuntimeWorkbench } from "./RuntimeWorkbench";
 
@@ -318,7 +318,7 @@ function AppRoutes() {
     [showCommunityQr, setShowCommunityQr] = useState(false);
   useEffect(() => {
     void kernelGet<{ imageUrl: string }>("/api/community-qr")
-      .then((community) => setCommunityQr(community.imageUrl))
+      .then((community) => setCommunityQr(kernelUrl(community.imageUrl)))
       .catch(() => undefined);
     const showModel = () => setNeedsModel(true),
       showCommunity = () => setShowCommunityQr(true);
