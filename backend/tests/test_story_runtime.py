@@ -80,7 +80,7 @@ def test_experience_turn_strips_mood_tag_and_emits_mood_event():
 
     async def mood_stream(*_args, **_kwargs):
         yield "[mood:happy]\n", "test-model"
-        yield "场景因你的到来而明亮起来。", "test-model"
+        yield "场景因你的到来而明亮起来。\n[choices]\n- 向同伴道谢\n- 观察四周变化\n[/choices]", "test-model"
 
     with patch("main.narrate", new=AsyncMock(side_effect=opening)), patch("main.narrate_stream", new=mood_stream):
         session = client.post(f"/api/works/{work['id']}/scripts/{script['id']}/sessions", json={"player_identity": "测试角色"}).json()["data"]
@@ -91,7 +91,9 @@ def test_experience_turn_strips_mood_tag_and_emits_mood_event():
     stored = client.get(f"/api/works/{work['id']}/sessions/{session['id']}").json()["data"]
     assert stored["history"][-1]["content"] == "场景因你的到来而明亮起来。"
     assert stored["history"][-1]["mood"] == "happy"
+    assert stored["history"][-1]["suggestions"] == ["向同伴道谢", "观察四周变化"]
     assert "[mood:" not in stored["history"][-1]["content"]
+    assert "[choices]" not in stored["history"][-1]["content"]
 
 
 def test_work_can_be_deleted_with_its_related_records():

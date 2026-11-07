@@ -61,6 +61,7 @@ type SessionHistoryItem = {
   error?: string;
   model?: string;
   mood?: string;
+  suggestions?: string[];
 };
 type Session = {
   id: string;
@@ -427,10 +428,12 @@ function Experience({
   work,
   scriptId,
   reload,
+  onScriptChange,
 }: {
   work: Work;
   scriptId: string;
   reload: () => Promise<void>;
+  onScriptChange: (scriptId: string) => void;
 }) {
   const [session, setSession] = useState<Session | null>(null),
     [input, setInput] = useState(""),
@@ -771,9 +774,36 @@ function Experience({
         ))}
       </aside>
       <main className="flex min-h-0 min-w-0 flex-col p-6">
-        <header>
-          <p className="text-xs text-brand">正在体验</p>
-          <h2 className="text-xl font-semibold">{script.title}</h2>
+        <header className="flex items-end justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs text-brand">正在体验</p>
+            <h2 className="mt-1 truncate text-xl font-semibold">
+              {script.title}
+            </h2>
+          </div>
+          <label className="shrink-0 text-xs text-muted-foreground">
+            当前副本
+            <select
+              value={script.id}
+              disabled={busy || !!starting || isGenerating}
+              onChange={(event) => onScriptChange(event.target.value)}
+              className="mt-1 block max-w-56 rounded-lg border bg-surface px-2.5 py-1.5 text-sm text-foreground disabled:opacity-50"
+            >
+              {work.scripts?.map((item) => (
+                <option
+                  key={item.id}
+                  value={item.id}
+                  disabled={item.status !== "ready"}
+                >
+                  {item.title}
+                  {work.workType !== "original_story"
+                    ? ` · 第 ${item.sourceStart}—${item.sourceEnd} 段`
+                    : ""}
+                  {item.status !== "ready" ? " · 构建中" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
         </header>
         {session ? (
           <>
@@ -782,39 +812,62 @@ function Experience({
               className="mt-6 min-h-0 flex-1 space-y-3 overflow-y-auto"
             >
               {session.history?.map((item, index) => (
-                <div
-                  key={index}
-                  className={`whitespace-pre-wrap rounded-xl p-4 text-sm leading-7 ${item.role === "user" ? "ml-10 bg-foreground text-primary-foreground" : "bg-active"}`}
-                >
-                  {item.role === "assistant" && !item.content ? (
-                    item.status === "failed" ? (
-                      <span className="text-destructive">
-                        剧情生成失败：{item.error || "请稍后重试。"}
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-2 text-muted-foreground">
-                        <span>剧情正在生成</span>
-                        <span className="flex gap-1">
-                          <i className="size-1.5 animate-bounce rounded-full bg-brand" />
-                          <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" />
-                          <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" />
+                <div key={index}>
+                  <div
+                    className={`whitespace-pre-wrap rounded-xl p-4 text-sm leading-7 ${item.role === "user" ? "ml-10 bg-foreground text-primary-foreground" : "bg-active"}`}
+                  >
+                    {item.role === "assistant" && !item.content ? (
+                      item.status === "failed" ? (
+                        <span className="text-destructive">
+                          剧情生成失败：{item.error || "请稍后重试。"}
                         </span>
-                      </span>
-                    )
-                  ) : (
-                    <>
-                      {item.content}
-                      {busy &&
-                        item.role === "assistant" &&
-                        index === (session.history?.length || 0) - 1 && (
-                          <span className="ml-2 inline-flex gap-1 align-middle">
+                      ) : (
+                        <span className="inline-flex items-center gap-2 text-muted-foreground">
+                          <span>剧情正在生成</span>
+                          <span className="flex gap-1">
                             <i className="size-1.5 animate-bounce rounded-full bg-brand" />
                             <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" />
                             <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" />
                           </span>
-                        )}
-                    </>
-                  )}
+                        </span>
+                      )
+                    ) : (
+                      <>
+                        {item.content}
+                        {busy &&
+                          item.role === "assistant" &&
+                          index === (session.history?.length || 0) - 1 && (
+                            <span className="ml-2 inline-flex gap-1 align-middle">
+                              <i className="size-1.5 animate-bounce rounded-full bg-brand" />
+                              <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" />
+                              <i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" />
+                            </span>
+                          )}
+                      </>
+                    )}
+                  </div>
+                  {item.role === "assistant" &&
+                  index === (session.history?.length || 0) - 1 &&
+                  item.suggestions?.length ? (
+                    <div className="mt-2 rounded-xl border border-dashed bg-workspace p-3">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        你可以这样推进
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {item.suggestions.map((suggestion) => (
+                          <button
+                            key={suggestion}
+                            type="button"
+                            onClick={() => setInput(suggestion)}
+                            disabled={busy || isGenerating}
+                            className="rounded-full border bg-surface px-3 py-1.5 text-left text-xs hover:bg-hover disabled:opacity-50"
+                          >
+                            {suggestion}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -981,6 +1034,17 @@ export function RuntimeWorkbench() {
       imported_novel: "导入小说",
       imported_screenwork: "影视灵感",
     };
+  const knowledgeStatus = !imported
+    ? "无需构建"
+    : work.ragIndex?.status === "ready"
+      ? `已完成 ${work.ragIndex.processed}/${work.ragIndex.total}`
+      : work.ragIndex?.status === "queued"
+        ? "等待构建"
+        : work.ragIndex?.status === "building"
+          ? `构建中 ${work.ragIndex.processed}/${work.ragIndex.total}`
+          : work.ragIndex?.status === "failed"
+            ? "构建失败"
+            : "未构建";
   function selectSection(next: string, nextScriptId = scriptId) {
     const query = new URLSearchParams({ id, tab: next });
     if (next === "experience" && nextScriptId)
@@ -1053,7 +1117,15 @@ export function RuntimeWorkbench() {
         autoOpenCardId={petChatCardId}
       />
     ) : section === "experience" ? (
-      <Experience work={work} scriptId={scriptId} reload={reload} />
+      <Experience
+        work={work}
+        scriptId={scriptId}
+        reload={reload}
+        onScriptChange={(value) => {
+          setScriptId(value);
+          selectSection("experience", value);
+        }}
+      />
     ) : (
       <section className="rounded-[18px] border border-border bg-workspace p-7">
         <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs text-brand">
@@ -1063,7 +1135,7 @@ export function RuntimeWorkbench() {
         <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
           {work.summary || "这是一个仅自己可体验的作品。"}
         </p>
-        <div className="mt-7 grid gap-3 sm:grid-cols-3">
+        <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-xl bg-active p-4">
             <p className="text-xs text-muted-foreground">隐私</p>
             <p className="mt-1 font-medium">仅自己可体验</p>
@@ -1077,6 +1149,10 @@ export function RuntimeWorkbench() {
             <p className="mt-1 font-medium">
               {imported ? `${work.sourceSegmentCount} 段` : "原创设定"}
             </p>
+          </div>
+          <div className="rounded-xl bg-active p-4">
+            <p className="text-xs text-muted-foreground">知识库状态</p>
+            <p className="mt-1 font-medium">{knowledgeStatus}</p>
           </div>
         </div>
         <div className="mt-7 flex flex-wrap gap-2">

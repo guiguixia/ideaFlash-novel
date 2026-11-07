@@ -49,6 +49,14 @@ EMOTION_SLOTS=("default","thinking","puzzled","happy","low")
 DEFAULT_EMOTION_DESCRIPTIONS={"default":"角色的默认外貌与日常神态","thinking":"目光沉静，像在斟酌或推演","puzzled":"微微蹙眉，带着不解与迟疑","happy":"神情放松，流露轻快与愉悦","low":"目光低垂，情绪低落或压抑"}
 MOOD_TAG_RE=re.compile(r"^\s*\[mood:([a-z][a-z0-9_-]{0,63})\]\s*$")
 MOOD_TAG_PREFIX_RE=re.compile(r"^\s*\[mood:([a-z][a-z0-9_-]{0,63})\]\s*")
+CHOICES_START="[choices]"
+CHOICES_BLOCK_RE=re.compile(r"\[choices\]\s*(.*?)\s*\[/choices\]\s*$",re.S)
+def parse_story_suggestions(block:str):
+ choices=[]
+ for line in block.splitlines():
+  value=re.sub(r"^\s*[-*]\s*", "", line).strip()
+  if value and value not in choices:choices.append(value[:80])
+ return choices[:4]
 def custom_emotions(card):return [item for item in (card.custom_emotions or []) if isinstance(item,dict) and item.get("id")]
 def emotion_descriptions(card):
  saved=card.emotion_descriptions or {}
@@ -65,9 +73,13 @@ def normalize_role_chat_history(history):
   cleaned.append(item)
  return cleaned
 def role_card(row):
- images={slot:f"/uploads/role-cards/{path}" for slot,path in (row.emotion_images or {}).items() if slot in EMOTION_SLOTS and path}
- if row.image_path:images["default"]=f"/uploads/role-cards/{row.image_path}"
- custom=[{"id":str(item["id"]),"name":str(item.get("name") or "自定义状态"),"description":str(item.get("description") or ""),"imageUrl":f"/uploads/role-cards/{item['image_path']}" if item.get("image_path") else ""} for item in custom_emotions(row)]
+ def image_url(path):
+  asset=ROLE_ASSET_DIR/path
+  version=asset.stat().st_mtime_ns if asset.exists() else 0
+  return f"/uploads/role-cards/{path}?v={version}"
+ images={slot:image_url(path) for slot,path in (row.emotion_images or {}).items() if slot in EMOTION_SLOTS and path}
+ if row.image_path:images["default"]=image_url(row.image_path)
+ custom=[{"id":str(item["id"]),"name":str(item.get("name") or "自定义状态"),"description":str(item.get("description") or ""),"imageUrl":image_url(item["image_path"]) if item.get("image_path") else ""} for item in custom_emotions(row)]
  return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"dialogueExamples":row.dialogue_examples or [],"imageUrl":images.get("default",""),"emotionImages":images,"emotionDescriptions":emotion_descriptions(row),"customEmotions":custom,"roleMode":"replacement"}
 def role_chat(chat,full=False):
  d={"id":chat.id,"title":chat.title,"turn":chat.turn,"createdAt":chat.created_at.isoformat() if chat.created_at else None,"updatedAt":chat.updated_at.isoformat() if chat.updated_at else None}
@@ -149,7 +161,20 @@ async def generate_session_turn(session_id:str,events:Queue):
   player=str((x.state or {}).get("playerIdentity") or s.player_identity or "")
   card=db.query(models.ExperienceRoleCard).filter_by(script_id=s.id,name=player).first()
   custom=[{"id":str(item.get("id") or ""),"name":str(item.get("name") or ""),"description":str(item.get("description") or "")} for item in custom_emotions(card)] if card else []
-  chunks=[];model="";mood="default";prefix="";waiting_for_mood=True
+  chunks=[];model="";mood="default";prefix="";waiting_for_mood=True;tail="";choices_raw="";reading_choices=False
+  def emit_story_content(content:str):
+   nonlocal tail,choices_raw,reading_choices
+   if not content:return
+   if reading_choices:
+    choices_raw+=content;return
+   tail+=content;marker=tail.find(CHOICES_START)
+   if marker>=0:
+    visible=tail[:marker];choices_raw=tail[marker:];tail="";reading_choices=True
+    if visible:chunks.append(visible);events.put(("chunk",visible))
+    return
+   safe=max(0,len(tail)-len(CHOICES_START)+1)
+   if safe:
+    visible=tail[:safe];tail=tail[safe:];chunks.append(visible);events.put(("chunk",visible))
   async for chunk,item_model in narrate_stream(db,s,history[:-1],message,player,custom):
    model=item_model
    if waiting_for_mood:
@@ -157,23 +182,30 @@ async def generate_session_turn(session_id:str,events:Queue):
     prefix_match=MOOD_TAG_PREFIX_RE.match(prefix)
     if prefix_match:
      mood=valid_mood(card,prefix_match.group(1)) if card else "default";events.put(("mood",mood));content=prefix[prefix_match.end():];waiting_for_mood=False
-     if content:chunks.append(content);events.put(("chunk",content))
+     emit_story_content(content)
      prefix="";continue
     if "\n" not in prefix and len(prefix)<80:continue
     first_line,separator,content=prefix.partition("\n");matched=MOOD_TAG_RE.match(first_line);waiting_for_mood=False
     if matched:
      mood=valid_mood(card,matched.group(1)) if card else "default";events.put(("mood",mood))
-     if content:chunks.append(content);events.put(("chunk",content))
-    else:chunks.append(prefix);events.put(("chunk",prefix))
+     emit_story_content(content)
+    else:emit_story_content(prefix)
     prefix=""
-   else:chunks.append(chunk);events.put(("chunk",chunk))
+   else:emit_story_content(chunk)
   if waiting_for_mood and prefix:
    matched=MOOD_TAG_RE.match(prefix)
    if matched:mood=valid_mood(card,matched.group(1)) if card else "default";events.put(("mood",mood))
-   else:chunks.append(prefix);events.put(("chunk",prefix))
+   else:emit_story_content(prefix)
+  if reading_choices:
+   match=CHOICES_BLOCK_RE.search(choices_raw)
+   if match:suggestions=parse_story_suggestions(match.group(1))
+   else:chunks.append(choices_raw);events.put(("chunk",choices_raw));suggestions=[]
+  else:
+   suggestions=[]
+  if tail:chunks.append(tail);events.put(("chunk",tail))
   reply="".join(chunks).strip()
   if not reply:raise RuntimeError("大模型未返回可展示内容")
-  x.history=history[:-1]+[{"role":"assistant","content":reply,"model":model,"mood":mood}];x.turn+=1;x.updated_at=datetime.now(timezone.utc);db.commit();events.put(("done",sess(x,True)))
+  x.history=history[:-1]+[{"role":"assistant","content":reply,"model":model,"mood":mood,"suggestions":suggestions}];x.turn+=1;x.updated_at=datetime.now(timezone.utc);db.commit();events.put(("done",sess(x,True)))
  except Exception as exc:
   db.rollback()
   x=db.get(models.ExperienceSession,session_id)
