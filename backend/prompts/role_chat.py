@@ -5,6 +5,8 @@
 以控制上下文长度并避免旧对话无限累积。
 """
 
+import json
+
 ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
 
 ## 私聊边界
@@ -22,7 +24,7 @@ ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
   - `[mood:puzzled]`：仅在角色确实感到不解、信息自相矛盾、需要用户澄清，或正文明确表现出困惑时使用。普通提问、好奇、思考、不了解背景、简短追问与警惕/戒备都使用 `[mood:default]`，不要使用此标签。
   - `[mood:happy]`：开心、轻松、期待、欣慰或亲近时使用。
   - `[mood:low]`：低落、失意、悲伤、疲惫、压抑或受挫时使用。
-- 角色还可配置专属状态；仅当本次正文明确符合其描述时，才可从下方“可用自定义状态”表中选用对应 ID，例如 `[mood:custom_xxx]`。没有精确匹配时必须使用固定值，不得编造 ID。
+{{custom_mood_lines}}- 仅可使用上面列出的标签；没有精确匹配时使用 `[mood:default]`，不得编造标签。
 - 标签后从第二行开始写给用户看的正文。
 - 标签是桌宠控制协议，不能在正文中提及、解释、重复或使用其他格式。
 
@@ -30,13 +32,20 @@ ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
 
 {{profile_json}}
 
-## 可用自定义状态
+## 角色原文对白参考
 
-{{custom_emotions_json}}
+- 以下内容仅用于学习角色的称呼、句长、用词和语气；不得照抄，也不得把对白中的事件当作当前事实。
+{{dialogue_reference_lines}}
 
 ## 副本世界观
 
 {{world_json}}
+
+## 副本关联原文依据
+
+- 以下来自当前副本选中章节及其此前内容，只能用来补充原文明确给出的事实。
+- 片段没有明确说明的内容保持未知；不得根据片段补写人物经历，也不得把原文后续情节说成当前私聊中已经发生的事。
+{{retrieved_knowledge_lines}}
 
 ## 最近私聊记录
 
@@ -52,6 +61,33 @@ ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
 '''
 
 
+def custom_mood_lines(custom_emotions_json: str) -> str:
+    """将角色配置的状态追加到固定情绪标签之后。"""
+    try:
+        emotions = json.loads(custom_emotions_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    return "".join(
+        f"  - `[mood:{item['id']}]`：{item['name']}；{item.get('description') or '按名称所表达的状态使用。'}\n"
+        for item in emotions
+        if isinstance(item, dict) and item.get("id") and item.get("name")
+    )
+
+
+def dialogue_reference_lines(dialogue_examples_json: str) -> str:
+    """将短对白转为私聊可用的口吻参考，而非剧情事实。"""
+    try:
+        examples = json.loads(dialogue_examples_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        examples = []
+    lines = [
+        f"- 「{str(item['text']).strip()}」\n  场景：{str(item.get('scene') or '原文对白')}；语气：{str(item.get('tone') or '未标注')}"
+        for item in examples
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    return "\n".join(lines) if lines else "- （暂无原文对白参考；只依据角色卡与世界观回复。）"
+
+
 def render_role_card_chat_prompt(
     *,
     role_name: str,
@@ -61,6 +97,8 @@ def render_role_card_chat_prompt(
     memory_summary: str,
     message: str,
     custom_emotions_json: str,
+    dialogue_examples_json: str,
+    retrieved_knowledge_lines: str,
 ) -> str:
     """渲染角色私聊 Prompt；调用方须传入可信的结构化上下文与已截断的历史。"""
     return (
@@ -71,7 +109,9 @@ def render_role_card_chat_prompt(
         .replace("{{recent_messages}}", recent_messages)
         .replace("{{memory_summary}}", memory_summary or "（暂无；只依据本次提供的私聊记录。）")
         .replace("{{message}}", message)
-        .replace("{{custom_emotions_json}}", custom_emotions_json or "（无）")
+        .replace("{{custom_mood_lines}}", custom_mood_lines(custom_emotions_json))
+        .replace("{{dialogue_reference_lines}}", dialogue_reference_lines(dialogue_examples_json))
+        .replace("{{retrieved_knowledge_lines}}", retrieved_knowledge_lines or "- （未检索到可用的副本关联原文依据。）")
     )
 
 

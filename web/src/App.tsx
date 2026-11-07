@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, Eye, EyeOff, QrCode, Settings, Sparkles, X } from "lucide-react";
 import {
   HashRouter,
@@ -114,6 +114,21 @@ function ModelSetupPrompt({
   );
 }
 
+function NoticeToast({ notice, onDismiss }: { notice: string; onDismiss: () => void }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const show = window.requestAnimationFrame(() => setVisible(true));
+    const hide = window.setTimeout(() => setVisible(false), 2600);
+    const dismiss = window.setTimeout(onDismiss, 3000);
+    return () => {
+      window.cancelAnimationFrame(show);
+      window.clearTimeout(hide);
+      window.clearTimeout(dismiss);
+    };
+  }, [notice, onDismiss]);
+  return <div role="status" className={`fixed left-1/2 top-1/4 z-[80] max-w-sm -translate-x-1/2 rounded-xl border border-brand-border bg-brand-soft px-5 py-3 text-sm text-brand shadow-[var(--shadow-floating-strong)] transition-all duration-300 ${visible ? "-translate-y-1/2 opacity-100" : "translate-y-[-45%] opacity-0"}`}>{notice}</div>;
+}
+
 function SettingsPage({
   onModelConfigured,
 }: {
@@ -121,15 +136,20 @@ function SettingsPage({
 }) {
   const nav = useNavigate();
   const location = useLocation();
+  const embeddingGuide = new URLSearchParams(location.search).get("rag") === "1";
+  const embeddingSectionRef = useRef<HTMLElement>(null);
   const [baseUrl, setBaseUrl] = useState("https://api.deepseek.com"),
     [model, setModel] = useState("deepseek-v4-pro"),
     [apiKey, setApiKey] = useState(""),
+    [embeddingBaseUrl, setEmbeddingBaseUrl] = useState(""),
+    [embeddingModel, setEmbeddingModel] = useState(""),
+    [embeddingApiKey, setEmbeddingApiKey] = useState(""),
     [showApiKey, setShowApiKey] = useState(false),
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
     [testing, setTesting] = useState(false);
   useEffect(() => {
-    void kernelGet<{ baseUrl: string; model: string; apiKey: string }>(
+    void kernelGet<{ baseUrl: string; model: string; apiKey: string; embeddingBaseUrl: string; embeddingModel: string; embeddingApiKey: string }>(
       "/api/settings/llm",
       { cache: "no-store" },
     )
@@ -137,24 +157,42 @@ function SettingsPage({
         setBaseUrl(config.baseUrl);
         setModel(config.model);
         setApiKey(config.apiKey);
+        setEmbeddingBaseUrl(config.embeddingBaseUrl);
+        setEmbeddingModel(config.embeddingModel);
+        setEmbeddingApiKey(config.embeddingApiKey);
       })
       .catch((reason) => setError(message(reason)));
   }, [location.key]);
-  async function save(event: FormEvent) {
-    event.preventDefault();
+  useEffect(() => {
+    if (!embeddingGuide) return;
+    const timer = window.setTimeout(() => embeddingSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+    return () => window.clearTimeout(timer);
+  }, [embeddingGuide]);
+  async function saveConfig(kind: "model" | "embedding") {
     setNotice("");
     setError("");
+    if (kind === "embedding" && (!embeddingBaseUrl.trim() || !embeddingModel.trim() || !embeddingApiKey.trim())) {
+      setError("请完整填写 Embedding 服务地址、模型和 API Key 后再保存。");
+      return;
+    }
     try {
       await kernelPatch("/api/settings/llm", {
         base_url: baseUrl,
         model,
         api_key: apiKey,
+        embedding_base_url: embeddingBaseUrl,
+        embedding_model: embeddingModel,
+        embedding_api_key: embeddingApiKey,
       });
       onModelConfigured();
-      setNotice("大模型配置已保存");
+      setNotice(kind === "embedding" ? "Embedding 配置已保存，可以返回工作台构建知识库。" : "大模型配置已保存");
     } catch (reason) {
       setError(message(reason));
     }
+  }
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    await saveConfig("model");
   }
   async function testConnection() {
     setNotice("");
@@ -173,15 +211,28 @@ function SettingsPage({
       setTesting(false);
     }
   }
+  function returnToPrevious() {
+    const returnTo = new URLSearchParams(location.search).get("returnTo");
+    if (returnTo?.startsWith("/workbench?")) {
+      nav(returnTo);
+      return;
+    }
+    if (window.history.length > 1) {
+      nav(-1);
+      return;
+    }
+    nav("/");
+  }
   return (
     <main className="mx-auto max-w-2xl p-6">
       <button
-        onClick={() => nav("/")}
+        onClick={returnToPrevious}
         className="flex items-center gap-1 text-sm"
       >
         <ArrowLeft className="size-4" />
-        返回我的作品
+        返回上一步
       </button>
+      {embeddingGuide && <aside role="alert" className="mt-5 rounded-xl border border-brand-border bg-brand-soft px-4 py-3 text-sm leading-6 text-brand">需要先完成 Embedding 配置，保存后即可返回工作台构建角色知识库。</aside>}
       <form
         onSubmit={save}
         className="mt-6 rounded-[18px] border bg-workspace p-6"
@@ -242,12 +293,20 @@ function SettingsPage({
             {testing ? "测试中…" : "测试连接"}
           </button>
           <button className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">
-            保存配置
+            保存大模型配置
           </button>
         </div>
-        {notice && <p className="mt-3 text-sm text-success">{notice}</p>}
         {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       </form>
+      <section ref={embeddingSectionRef} className={`mt-4 rounded-[18px] border bg-workspace p-6 ${embeddingGuide ? "border-brand" : ""}`}>
+        <p className="text-xs font-medium text-brand">角色知识 RAG（可选）</p>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{embeddingGuide ? "构建知识库前，请先填写下列 Embedding 配置，再点击上方“保存配置”。" : "用于从导入原文检索角色在副本前已经知道的事实；未配置时角色私聊仍可正常使用。"}</p>
+        <label className="mt-4 block text-sm">Embedding 服务地址<input value={embeddingBaseUrl} onChange={(event) => setEmbeddingBaseUrl(event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" className="mt-1 w-full rounded-lg border px-3 py-2" /></label>
+        <label className="mt-3 block text-sm">Embedding 模型<input value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} placeholder="例如：qwen3.7-text-embedding-flash" className="mt-1 w-full rounded-lg border px-3 py-2" /></label>
+        <label className="mt-3 block text-sm">Embedding API Key<input type="password" value={embeddingApiKey} onChange={(event) => setEmbeddingApiKey(event.target.value)} placeholder="仅保存在本机" className="mt-1 w-full rounded-lg border px-3 py-2" /></label>
+        <button type="button" onClick={() => void saveConfig("embedding")} className="mt-5 rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">保存 Embedding 配置</button>
+      </section>
+      {notice && <NoticeToast notice={notice} onDismiss={() => setNotice("")} />}
     </main>
   );
 }

@@ -14,7 +14,7 @@ import models
 from auth import CurrentUser,get_current_user
 from database import Base,SessionLocal,engine,get_db,reset_legacy_schema,run_schema_migrations
 from schemas import *
-from services import _narration_completion,build_experience_snapshot,compact_role_chat_memory,experience_role_cards,narrate,narrate_stream,role_chat_reply_stream,snapshot,split_source_document
+from services import _narration_completion,build_experience_snapshot,build_work_rag_index,compact_role_chat_memory,experience_role_cards,narrate,narrate_stream,role_chat_reply_stream,snapshot,split_source_document,work_rag_index_progress
 from trace import TraceMiddleware,trace_id
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 ROLE_ASSET_DIR=Path(os.getenv("NOVEL_DATA_DIR") or Path(__file__).resolve().parent / "data") / "role-cards";ROLE_ASSET_DIR.mkdir(parents=True,exist_ok=True)
@@ -39,7 +39,7 @@ app=FastAPI(title="Story Experience API",version="1.0.0");app.add_middleware(Tra
 def out(data=None,msg="ok"):return {"code":0,"data":data,"msg":msg,"traceId":trace_id()}
 def lst(data,msg="ok"):return {"code":0,"list":data,"msg":msg,"traceId":trace_id()}
 def wd(w,counts=None):
- c=counts or {};return {"id":w.id,"title":w.title,"workType":w.work_type,"summary":w.summary,"settings":w.settings or {},"status":w.status,"privacy":"owner_only","sourceSegmentCount":c.get("segments",0),"scriptCount":c.get("scripts",0),"createdAt":w.created_at.isoformat() if w.created_at else None}
+ c=counts or {};return {"id":w.id,"title":w.title,"workType":w.work_type,"summary":w.summary,"settings":w.settings or {},"status":w.status,"privacy":"owner_only","sourceSegmentCount":c.get("segments",0),"scriptCount":c.get("scripts",0),"ragIndex":{"status":w.rag_status,"processed":w.rag_processed,"total":w.rag_total,"error":w.rag_error},"createdAt":w.created_at.isoformat() if w.created_at else None}
 def sd(s,n=0):return {"id":s.id,"title":s.title,"sourceStart":s.source_start,"sourceEnd":s.source_end,"playerIdentity":s.player_identity,"characters":[str(row.get("name")) for row in (s.snapshot or {}).get("extractedCharacters",[]) if isinstance(row,dict) and row.get("name")],"perspective":s.perspective,"version":s.version,"status":s.status,"sessionCount":n}
 def sess(x,full=False):
  d={"id":x.id,"scriptId":x.script_id,"title":x.title,"status":x.status,"turn":x.turn,"state":x.state or {},"createdAt":x.created_at.isoformat() if x.created_at else None}
@@ -64,7 +64,7 @@ def role_card(row):
  images={slot:f"/uploads/role-cards/{path}" for slot,path in (row.emotion_images or {}).items() if slot in EMOTION_SLOTS and path}
  if row.image_path:images["default"]=f"/uploads/role-cards/{row.image_path}"
  custom=[{"id":str(item["id"]),"name":str(item.get("name") or "自定义状态"),"description":str(item.get("description") or ""),"imageUrl":f"/uploads/role-cards/{item['image_path']}" if item.get("image_path") else ""} for item in custom_emotions(row)]
- return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"imageUrl":images.get("default",""),"emotionImages":images,"customEmotions":custom,"roleMode":"replacement"}
+ return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"dialogueExamples":row.dialogue_examples or [],"imageUrl":images.get("default",""),"emotionImages":images,"customEmotions":custom,"roleMode":"replacement"}
 def role_chat(chat,full=False):
  d={"id":chat.id,"title":chat.title,"turn":chat.turn,"createdAt":chat.created_at.isoformat() if chat.created_at else None,"updatedAt":chat.updated_at.isoformat() if chat.updated_at else None}
  if full:d["history"]=normalize_role_chat_history(chat.history)
@@ -72,7 +72,7 @@ def role_chat(chat,full=False):
 def seed_role_cards(db,work_id,script):
  if db.query(models.ExperienceRoleCard).filter_by(script_id=script.id).count():return
  for source in experience_role_cards(script.snapshot or {}):
-  db.add(models.ExperienceRoleCard(work_id=work_id,script_id=script.id,name=source["name"],identity=source.get("identity","") or "",appearance=source.get("appearance","") or "",current_state=source.get("currentState","") or "",attributes=source.get("attributes") or {},source_segment_orders=source.get("sourceSegmentOrders") or []))
+  db.add(models.ExperienceRoleCard(work_id=work_id,script_id=script.id,name=source["name"],identity=source.get("identity","") or "",appearance=source.get("appearance","") or "",current_state=source.get("currentState","") or "",attributes=source.get("attributes") or {},source_segment_orders=source.get("sourceSegmentOrders") or [],dialogue_examples=source.get("dialogueExamples") or []))
  db.commit()
 def role_card_for_script(db,work,script_id,card_id):
  script=db.query(models.ExperienceScript).filter_by(id=script_id,work_id=work.id).first()
@@ -92,6 +92,8 @@ async def run_in_build_llm_worker(job,*args):
  return await loop.run_in_executor(LLM_BUILD_WORKERS,lambda:asyncio.run(job(*args)))
 def enqueue_interactive_llm_worker(job,*args):
  return LLM_INTERACTIVE_WORKERS.submit(lambda:asyncio.run(job(*args)))
+def enqueue_build_llm_worker(job,*args):
+ return LLM_BUILD_WORKERS.submit(lambda:asyncio.run(job(*args)))
 async def run_experience_build(run_id:str):
  db=SessionLocal()
  try:
@@ -112,6 +114,12 @@ async def run_experience_build(run_id:str):
 async def run_experience_build_in_worker(run_id:str):
  """让耗时的大模型构建脱离 API 事件循环，避免任务卡住作品列表与其他操作。"""
  await run_in_build_llm_worker(run_experience_build,run_id)
+async def run_work_rag_build(work_id:str):
+ db=SessionLocal()
+ try:
+  work=db.get(models.Work,work_id)
+  if work:await build_work_rag_index(db,work)
+ finally:db.close()
 
 async def generate_session_opening(session_id:str):
  db=SessionLocal()
@@ -198,10 +206,10 @@ def health():return {"status":"ok"}
 @app.get("/api/settings/llm")
 def llm_get(response:Response,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  response.headers["Cache-Control"]="no-store"
- c=db.get(models.LLMConfig,1);return out({"baseUrl":c.base_url if c else "https://api.deepseek.com","model":c.model if c else "deepseek-v4-pro","apiKey":c.api_key if c else "","apiKeyConfigured":bool(c and c.api_key)})
+ c=db.get(models.LLMConfig,1);return out({"baseUrl":c.base_url if c else "https://api.deepseek.com","model":c.model if c else "deepseek-v4-pro","apiKey":c.api_key if c else "","apiKeyConfigured":bool(c and c.api_key),"embeddingBaseUrl":c.embedding_base_url if c else "","embeddingModel":c.embedding_model if c else "","embeddingApiKey":c.embedding_api_key if c else "","embeddingApiKeyConfigured":bool(c and c.embedding_api_key)})
 @app.patch("/api/settings/llm")
 def llm_set(body:LLMConfigUpdateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- c=db.get(models.LLMConfig,1) or models.LLMConfig(id=1);db.add(c);c.base_url=body.base_url.strip().rstrip("/");c.model=body.model.strip();c.api_key=body.api_key.strip();db.commit();return out({"baseUrl":c.base_url,"model":c.model,"apiKeyConfigured":bool(c.api_key)},"大模型配置已保存")
+ c=db.get(models.LLMConfig,1) or models.LLMConfig(id=1);db.add(c);c.base_url=body.base_url.strip().rstrip("/");c.model=body.model.strip();c.api_key=body.api_key.strip();c.embedding_base_url=body.embedding_base_url.strip().rstrip("/");c.embedding_model=body.embedding_model.strip();c.embedding_api_key=body.embedding_api_key.strip();db.commit();return out({"baseUrl":c.base_url,"model":c.model,"apiKeyConfigured":bool(c.api_key),"embeddingBaseUrl":c.embedding_base_url,"embeddingModel":c.embedding_model,"embeddingApiKeyConfigured":bool(c.embedding_api_key)},"大模型配置已保存")
 @app.post("/api/settings/llm/test")
 async def llm_test(body:LLMConfigUpdateRequest,current_user:CurrentUser=Depends(get_current_user)):
  base_url=body.base_url.strip().rstrip("/")
@@ -244,6 +252,17 @@ def work_segments(work_id:str,page:int=1,page_size:int=20,start_sequence:int|Non
     if start_sequence is not None:
         rows=query.filter(models.SourceSegment.sequence>=max(1,start_sequence)).order_by(models.SourceSegment.sequence).limit(page_size).all();return out({"items":[{"id":x.id,"sequence":x.sequence,"title":x.title,"content":x.content} for x in rows],"page":1,"pageSize":page_size,"total":len(rows),"totalPages":1})
     total=query.count();rows=query.order_by(models.SourceSegment.sequence).offset((page-1)*page_size).limit(page_size).all();return out({"items":[{"id":x.id,"sequence":x.sequence,"title":x.title,"content":x.content} for x in rows],"page":page,"pageSize":page_size,"total":total,"totalPages":max(1,(total+page_size-1)//page_size)})
+@app.post("/api/works/{work_id}/rag-index")
+def rag_index_build(work_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user)
+ if w.work_type=="original_story":raise HTTPException(400,"原创故事暂不支持原文知识库")
+ if w.rag_status=="building":return out(wd(w),"角色知识库正在构建")
+ w.rag_status,w.rag_error="queued","";db.commit();enqueue_build_llm_worker(run_work_rag_build,w.id);return out(wd(w),"已开始构建角色知识库")
+@app.get("/api/works/{work_id}/rag-index/preview")
+def rag_index_preview(work_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user)
+ if w.work_type=="original_story":raise HTTPException(400,"原创故事暂不支持原文知识库")
+ return out({**work_rag_index_progress(db,w),"status":w.rag_status},"知识库构建预览")
 @app.patch("/api/works/{work_id}")
 def work_update(work_id:str,body:WorkUpdateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user)
@@ -267,6 +286,14 @@ def script_role_cards(work_id:str,script_id:str,current_user:CurrentUser=Depends
  if not s:raise HTTPException(404,"体验副本不存在")
  if s.status!="ready":raise HTTPException(409,"体验副本仍在构建中")
  seed_role_cards(db,w.id,s);return out([role_card(row) for row in db.query(models.ExperienceRoleCard).filter_by(work_id=w.id,script_id=s.id).order_by(models.ExperienceRoleCard.created_at).all()],"副本角色卡")
+@app.get("/api/works/{work_id}/role-contexts")
+def role_contexts(work_id:str,name:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role_name=name.strip()
+ if not role_name:raise HTTPException(400,"缺少角色名称")
+ scripts=db.query(models.ExperienceScript).filter_by(work_id=w.id,status="ready").order_by(models.ExperienceScript.created_at.desc()).all()
+ for script in scripts:seed_role_cards(db,w.id,script)
+ cards=db.query(models.ExperienceRoleCard).filter_by(work_id=w.id,name=role_name).all();by_script={card.script_id:card for card in cards}
+ return out([{"script":sd(script),"card":role_card(by_script[script.id])} for script in scripts if script.id in by_script],"角色可切换副本")
 @app.post("/api/works/{work_id}/scripts/{script_id}/role-cards")
 def role_card_create(work_id:str,script_id:str,body:RoleCardUpsertRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);s=db.query(models.ExperienceScript).filter_by(id=script_id,work_id=w.id).first()

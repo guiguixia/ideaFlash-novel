@@ -3,7 +3,7 @@ import io,json,re,zipfile
 import httpx
 from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
-from models import ExperienceRoleCard,ExperienceScript,LLMConfig,SourceSegment,Work
+from models import ExperienceRoleCard,ExperienceScript,LLMConfig,RagSourceChunk,SourceSegment,Work
 from prompts.experience import render_experience_snapshot_extraction_prompt
 from prompts.historical_question import render_historical_question_resolver_prompt
 from prompts.role_chat import render_role_card_chat_prompt,render_role_chat_memory_summary_prompt
@@ -23,6 +23,67 @@ def _model_request_options(config:LLMConfig):
  return {}
 def _require_narration_config(config:LLMConfig|None):
  if not config or not config.api_key:raise RuntimeError("未配置大模型 API Key，无法继续体验")
+def _source_chunks(text:str,size:int=500,overlap:int=50):
+ step=size-overlap
+ return [text[index:index+size].strip() for index in range(0,len(text),step) if text[index:index+size].strip()]
+def _cosine(left:list[float],right:list[float]):
+ numerator=sum(a*b for a,b in zip(left,right));denominator=(sum(a*a for a in left)*sum(b*b for b in right))**.5
+ return numerator/denominator if denominator else 0
+def _query_keywords(message:str,role_name:str):
+ text=re.sub(r"[，。！？、；：,.!?\s]","",message)
+ ignored={"为什么","怎么","什么","是不是","可以","能够","一下","这个","那个","然后","请问","知道","事情","关于"}
+ candidates={role_name} if role_name else set()
+ for size in range(2,min(8,len(text))+1):
+  candidates.update(text[index:index+size] for index in range(len(text)-size+1))
+ return [word for word in candidates if word and word not in ignored]
+async def retrieve_prior_knowledge(db:Session,script:ExperienceScript,message:str,role_name:str,limit:int=5):
+ """检索副本选中章节及此前的原文证据；副本结束后的章节不参与。"""
+ upper_bound=script.source_end or script.source_start
+ if not upper_bound:return []
+ rows=db.query(RagSourceChunk).filter(RagSourceChunk.work_id==script.work_id,RagSourceChunk.source_segment_order<=upper_bound).all()
+ if not rows:return []
+ config=db.get(LLMConfig,1)
+ try:query=(await _embed(config,[message]))[0]
+ except Exception:return []
+ keywords=_query_keywords(message,role_name);ranked=[]
+ for row in rows:
+  semantic=_cosine(query,row.embedding or []);keyword=sum(1 for word in keywords if len(word)>=2 and word in row.content)
+  score=semantic+min(keyword,4)*.08+(0.04 if role_name and role_name in row.content else 0)
+  ranked.append((score,row))
+ ranked.sort(key=lambda item:item[0],reverse=True)
+ return [{"chapter":row.source_segment_order,"title":row.source_title,"content":row.content,"score":round(score,4)} for score,row in ranked[:limit]]
+def _retrieved_knowledge_lines(items:list[dict]):
+ """把检索命中压缩为 Prompt 可引用的短原文证据。"""
+ return "\n".join(f"- 第 {item['chapter']} 节《{item['title']}》：{item['content'][:500]}" for item in items) or "- （未检索到可用的副本前原文依据。）"
+async def _embed(config:LLMConfig,texts:list[str]):
+ if not config.embedding_base_url or not config.embedding_api_key or not config.embedding_model:raise RuntimeError("请先在大模型设置中配置 Embedding 服务")
+ client=AsyncOpenAI(api_key=config.embedding_api_key,base_url=config.embedding_base_url,http_client=httpx.AsyncClient(trust_env=False,timeout=httpx.Timeout(90)),max_retries=0)
+ try:
+  response=await client.embeddings.create(model=config.embedding_model,input=texts,encoding_format="float")
+  return [item.embedding for item in sorted(response.data,key=lambda item:item.index)]
+ finally:await client.close()
+def _work_rag_rows(db:Session,work:Work):
+ segments=db.query(SourceSegment).filter_by(work_id=work.id).order_by(SourceSegment.sequence).all()
+ return [(segment,order,text) for segment in segments for order,text in enumerate(_source_chunks(segment.content))]
+def work_rag_index_progress(db:Session,work:Work):
+ rows=_work_rag_rows(db,work);existing={(item.source_segment_order,item.chunk_order) for item in db.query(RagSourceChunk).filter_by(work_id=work.id).all()}
+ completed=sum((segment.sequence,order) in existing for segment,order,_ in rows)
+ return {"total":len(rows),"completed":completed,"remaining":len(rows)-completed}
+async def build_work_rag_index(db:Session,work:Work):
+ config=db.get(LLMConfig,1);rows=_work_rag_rows(db,work)
+ completed={(item.source_segment_order,item.chunk_order) for item in db.query(RagSourceChunk).filter_by(work_id=work.id).all()};pending=[item for item in rows if (item[0].sequence,item[1]) not in completed]
+ work.rag_status,work.rag_processed,work.rag_total,work.rag_error="building",len(rows)-len(pending),len(rows),"";db.commit()
+ logger.info("RAG_INDEX_BUILD_BEGIN work_id=%s completed=%s total=%s remaining=%s embedding_model=%s embedding_base_url=%s",work.id,work.rag_processed,work.rag_total,len(pending),config.embedding_model if config else "",config.embedding_base_url if config else "")
+ try:
+  for start in range(0,len(pending),20):
+   batch=pending[start:start+20];vectors=await _embed(config,[item[2] for item in batch])
+   db.add_all([RagSourceChunk(work_id=work.id,source_segment_order=segment.sequence,source_title=segment.title,chunk_order=order,content=text,embedding=vector) for (segment,order,text),vector in zip(batch,vectors)])
+   work.rag_processed=len(rows)-len(pending)+start+len(batch);db.commit()
+  work.rag_status="ready";db.commit()
+ except Exception as exc:
+  work.rag_status,work.rag_error="failed",f"{exc.__class__.__name__}: {exc}";db.commit()
+  logger.exception("RAG_INDEX_BUILD_FAILED work_id=%s processed=%s total=%s batch_start=%s batch_size=%s embedding_model=%s embedding_base_url=%s",work.id,work.rag_processed,work.rag_total,locals().get("start",0),len(locals().get("batch",[])),config.embedding_model if config else "",config.embedding_base_url if config else "")
+  raise
 
 def _log_llm_request(stage:str,config:LLMConfig,prompt:str,temperature:float,stream:bool=False,response_format:str="text"):
  logger.info("LLM_REQUEST_BEGIN\nstage: %s\nmodel: %s\nbase_url: %s\ntemperature: %s\nstream: %s\nresponse_format: %s\nprompt:\n%s\nLLM_REQUEST_END",stage,config.model,config.base_url,temperature,stream,response_format,prompt)
@@ -88,11 +149,14 @@ async def _json_completion(db:Session,prompt:str,temperature:float=.1,stage:str=
   logger.exception("LLM_REQUEST_FAILED stage=%s model=%s",stage,config.model)
   raise RuntimeError(f"大模型调用失败（{config.model}）：{exc.__class__.__name__}: {exc}") from exc
  finally:await client.close()
+EXTRACTION_SCHEMA_VERSION=2
+
 async def extract_experience_chapter(db:Session,segment:SourceSegment):
  cached=segment.experience_extraction if isinstance(segment.experience_extraction,dict) else {}
- if cached:return {**cached,"sourceSegmentOrder":segment.sequence,"chapterTitle":segment.title}
+ if cached.get("extractionSchemaVersion",1)>=EXTRACTION_SCHEMA_VERSION:return {**cached,"sourceSegmentOrder":segment.sequence,"chapterTitle":segment.title}
  prompt=render_experience_snapshot_extraction_prompt(segment.content[:18000])
  data=await _json_completion(db,prompt,stage=f"experience_chapter_extraction:{segment.sequence}")
+ data["extractionSchemaVersion"]=EXTRACTION_SCHEMA_VERSION
  segment.experience_extraction=data
  db.commit()
  return {**data,"sourceSegmentOrder":segment.sequence,"chapterTitle":segment.title}
@@ -103,6 +167,21 @@ def _merge_named(rows:list[dict],key:str):
    if isinstance(item,dict) and item.get("name"):
     name=str(item["name"]);current=merged.setdefault(name,{**item,"sourceSegmentOrders":[]});current["sourceSegmentOrders"].append(row.get("sourceSegmentOrder"))
  return list(merged.values())
+def _role_dialogue_examples(snapshot:dict,name:str,limit:int=8):
+ """按来源片段汇总角色原文短对白，供私聊时再挑选少量口吻参考。"""
+ examples=[];seen=set()
+ for chapter in snapshot.get("chapterExtractions") or []:
+  order=chapter.get("sourceSegmentOrder")
+  for character in chapter.get("characters") or []:
+   if not isinstance(character,dict) or str(character.get("name") or "")!=name:continue
+   for row in character.get("dialogues") or []:
+    if not isinstance(row,dict):continue
+    text=str(row.get("text") or "").strip()
+    if not text or text in seen:continue
+    seen.add(text);examples.append({"text":text[:80],"scene":str(row.get("scene") or "")[:80],"tone":str(row.get("tone") or "")[:40],"sourceSegmentOrder":order})
+    if len(examples)>=limit:return examples
+ return examples
+
 def experience_role_cards(snapshot:dict):
  first={}
  for chapter in snapshot.get("chapterExtractions") or []:
@@ -114,7 +193,8 @@ def experience_role_cards(snapshot:dict):
   attributes=dict(row.get("attributes") or {}) if isinstance(row.get("attributes"),dict) else {}
   initial=first.get(str(row["name"]),{})
   initial_attributes=initial.get("attributes") if isinstance(initial.get("attributes"),dict) else {}
-  cards.append({"name":str(row["name"]),"identity":str(attributes.get("identity") or attributes.get("身份") or ""),"affiliation":str(attributes.get("affiliation") or attributes.get("所属势力") or attributes.get("势力") or ""),"ability":str(attributes.get("ability") or attributes.get("能力") or attributes.get("实力") or attributes.get("修为") or ""),"appearance":str(row.get("appearance") or initial.get("appearance") or ""),"currentState":str(initial_attributes.get("currentState") or initial_attributes.get("current_state") or initial_attributes.get("当前状态") or ""),"attributes":attributes,"sourceSegmentOrders":row.get("sourceSegmentOrders") or [],"roleMode":"replacement"})
+  name=str(row["name"])
+  cards.append({"name":name,"identity":str(attributes.get("identity") or attributes.get("身份") or ""),"affiliation":str(attributes.get("affiliation") or attributes.get("所属势力") or attributes.get("势力") or ""),"ability":str(attributes.get("ability") or attributes.get("能力") or attributes.get("实力") or attributes.get("修为") or ""),"appearance":str(row.get("appearance") or initial.get("appearance") or ""),"currentState":str(initial_attributes.get("currentState") or initial_attributes.get("current_state") or initial_attributes.get("当前状态") or ""),"attributes":attributes,"sourceSegmentOrders":row.get("sourceSegmentOrders") or [],"dialogueExamples":_role_dialogue_examples(snapshot,name),"roleMode":"replacement"})
  return cards
 async def build_experience_snapshot(db:Session,work:Work,segments:list[SourceSegment],progress=None):
  # 兼容缓存字段上线前已经成功生成的副本：首次再次使用时，把其章节结果回填到资料片段。
@@ -187,7 +267,8 @@ async def narrate(db:Session,script:ExperienceScript,history:list[dict],message:
   context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
   _require_narration_config(config)
   recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
-  prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n会话：{recent}\n玩家行动：{message or '生成副本开场'}\n输出中文沉浸式叙事，并在可行动节点停下。"
+  knowledge=await retrieve_prior_knowledge(db,script,message or f"{identity} 副本开始前的经历、关系与处境",identity)
+  prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n副本关联原文依据（覆盖副本选中章节及此前内容；可补充事实，但不要将未在当前会话发生的情节提前叙述为已发生）：\n{_retrieved_knowledge_lines(knowledge)}\n会话：{recent}\n玩家行动：{message or '生成副本开场'}\n输出中文沉浸式叙事，并在可行动节点停下。"
   return await _narration_completion(config,prompt,.35,"experience_narration")
  _require_narration_config(config)
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
@@ -200,7 +281,8 @@ async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],m
   context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
   _require_narration_config(config)
   recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
-  prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n会话：{recent}\n玩家行动：{message}\n输出中文沉浸式叙事，并在可行动节点停下。"
+  knowledge=await retrieve_prior_knowledge(db,script,message,identity)
+  prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n副本关联原文依据（覆盖副本选中章节及此前内容；可补充事实，但不要将未在当前会话发生的情节提前叙述为已发生）：\n{_retrieved_knowledge_lines(knowledge)}\n会话：{recent}\n玩家行动：{message}\n输出中文沉浸式叙事，并在可行动节点停下。"
   async for chunk in _narration_stream(config,prompt,.35,"experience_narration_stream"):yield chunk,config.model
   return
  _require_narration_config(config)
@@ -213,16 +295,29 @@ ROLE_CHAT_SUMMARY_TURNS=10
 
 async def role_chat_reply_stream(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
  config=db.get(LLMConfig,1);_require_narration_config(config)
- prompt=_role_chat_prompt(script,card,history,message,memory_summary,summary_cursor)
+ prompt=await _role_chat_prompt(db,script,card,history,message,memory_summary,summary_cursor)
  async for chunk in _narration_stream(config,prompt,.75,"role_card_chat_stream"):yield chunk,config.model
 
-def _role_chat_prompt(script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
+def _select_dialogue_examples(examples:list,limit:int=5):
+ """优先覆盖不同来源片段，避免同一场景的对白占满 Prompt。"""
+ selected=[];orders=set()
+ for row in examples:
+  if not isinstance(row,dict) or not row.get("text") or row.get("sourceSegmentOrder") in orders:continue
+  selected.append(row);orders.add(row.get("sourceSegmentOrder"))
+  if len(selected)>=limit:return selected
+ for row in examples:
+  if isinstance(row,dict) and row.get("text") and row not in selected:selected.append(row)
+  if len(selected)>=limit:break
+ return selected
+
+async def _role_chat_prompt(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
  """整理私聊上下文；具体规则纳管在 prompts.role_chat，两个私聊入口共用。"""
  snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
  custom_emotions=[{"id":str(item.get("id") or ""),"name":str(item.get("name") or ""),"description":str(item.get("description") or "")} for item in (card.custom_emotions or []) if item.get("id")]
  profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
  recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[max(summary_cursor,0):][-ROLE_CHAT_CONTEXT_TURNS*2:])
- return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,custom_emotions_json=json.dumps(custom_emotions,ensure_ascii=False))
+ knowledge=await retrieve_prior_knowledge(db,script,message,card.name)
+ return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,custom_emotions_json=json.dumps(custom_emotions,ensure_ascii=False),dialogue_examples_json=json.dumps(_select_dialogue_examples(card.dialogue_examples or []),ensure_ascii=False),retrieved_knowledge_lines=_retrieved_knowledge_lines(knowledge))
 
 def _completed_role_chat_turns(history:list[dict],cursor:int=0):
  """从未压缩历史中按时间顺序识别成功的“用户消息 + 角色回复”回合。"""

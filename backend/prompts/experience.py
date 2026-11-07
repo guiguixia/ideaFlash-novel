@@ -180,7 +180,16 @@ EXPERIENCE_SNAPSHOT_EXTRACTION_PROMPT = '''你是中文小说选定章节的局�
 - name：人物名称。
 - appearance：本章原文明示的人物外貌描述。
 - attributes：除外貌之外，本章明确表达的人物属性。
+- dialogues：该人物在本章中明确归属的短对白示例。
 - importance：重要程度。
+
+### dialogues
+
+dialogues 用于后续学习角色的说话方式，每项包含 text、scene、tone。
+
+- 只收录原文中明确由该人物说出的直接对白；不得改写、拼接或杜撰。
+- 每人最多保留 2 条，每条不超过 80 个汉字/字符；没有合适对白时返回空数组。
+- scene 用极短文字说明说话场景，tone 用极短文字说明语气；两者只作分类参考，不得把对白中的事件当成后续剧情事实。
 
 ### appearance
 
@@ -407,6 +416,9 @@ status 可根据当前章节明确情况使用：
       "name": "",
       "appearance": "",
       "attributes": {},
+      "dialogues": [
+        {"text": "", "scene": "", "tone": ""}
+      ],
       "importance": 1
     }
   ],

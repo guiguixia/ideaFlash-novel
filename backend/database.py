@@ -73,3 +73,25 @@ def run_schema_migrations():
                     custom.append({"id":"custom_legacy","name":row["special_emotion_label"] or "特殊状态","description":"","image_path":legacy_path})
                 connection.exec_driver_sql("UPDATE experience_role_cards SET emotion_images = ?, custom_emotions = ? WHERE id = ?",(json.dumps(images,ensure_ascii=False),json.dumps(custom,ensure_ascii=False),row["id"]))
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (5, CURRENT_TIMESTAMP)")
+        role_dialogue_examples=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 6").first()
+        if not role_dialogue_examples:
+            columns={column["name"] for column in inspect(engine).get_columns("experience_role_cards")}
+            if "dialogue_examples" not in columns:
+                connection.exec_driver_sql("ALTER TABLE experience_role_cards ADD COLUMN dialogue_examples JSON NOT NULL DEFAULT '[]'")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (6, CURRENT_TIMESTAMP)")
+        embedding_config=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 7").first()
+        if not embedding_config:
+            columns={column["name"] for column in inspect(engine).get_columns("llm_configs")}
+            if "embedding_base_url" not in columns:
+                connection.exec_driver_sql("ALTER TABLE llm_configs ADD COLUMN embedding_base_url VARCHAR(500) NOT NULL DEFAULT ''")
+            if "embedding_api_key" not in columns:
+                connection.exec_driver_sql("ALTER TABLE llm_configs ADD COLUMN embedding_api_key TEXT NOT NULL DEFAULT ''")
+            if "embedding_model" not in columns:
+                connection.exec_driver_sql("ALTER TABLE llm_configs ADD COLUMN embedding_model VARCHAR(160) NOT NULL DEFAULT ''")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (7, CURRENT_TIMESTAMP)")
+        rag_index=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 8").first()
+        if not rag_index:
+            columns={column["name"] for column in inspect(engine).get_columns("works")}
+            for name,definition in {"rag_status":"VARCHAR(32) NOT NULL DEFAULT 'not_built'","rag_processed":"INTEGER NOT NULL DEFAULT 0","rag_total":"INTEGER NOT NULL DEFAULT 0","rag_error":"TEXT NOT NULL DEFAULT ''"}.items():
+                if name not in columns:connection.exec_driver_sql(f"ALTER TABLE works ADD COLUMN {name} {definition}")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (8, CURRENT_TIMESTAMP)")
