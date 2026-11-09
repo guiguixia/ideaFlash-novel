@@ -34,13 +34,13 @@ type Script = {
     error: string;
   } | null;
 };
-type EmotionSlot = "default" | "thinking" | "puzzled" | "happy" | "low";
 type CustomEmotion = {
   id: string;
   name: string;
   description: string;
   imageUrl: string;
 };
+type AvailableEmotion = { id: string; name: string; description: string };
 type RoleCard = {
   id: string;
   name: string;
@@ -50,9 +50,10 @@ type RoleCard = {
   attributes?: Record<string, string>;
   sourceSegmentOrders: number[];
   imageUrl: string;
-  emotionImages: Partial<Record<EmotionSlot, string>>;
-  emotionDescriptions: Record<EmotionSlot, string>;
+  emotionImages: Record<string, string>;
+  emotionDescriptions: Record<string, string>;
   customEmotions: CustomEmotion[];
+  availableEmotions: AvailableEmotion[];
 };
 type SessionHistoryItem = {
   role: "user" | "assistant";
@@ -98,14 +99,6 @@ type Segment = { id: string; sequence: number; title: string };
 type SegmentPage = { items: Segment[]; page: number; totalPages: number };
 const message = (err: unknown) =>
   err instanceof Error ? err.message : "操作失败，请重试";
-const moodNames: Record<EmotionSlot, string> = {
-  default: "默认",
-  thinking: "思考",
-  puzzled: "疑惑",
-  happy: "开心",
-  low: "低落",
-};
-
 function RolePortrait({
   src,
   alt,
@@ -678,23 +671,13 @@ function Experience({
         (item.state?.playerIdentity || script.playerIdentity) === player,
     ) || [];
   const activeCard = roleCards.find((card) => card.name === player);
-  const customMood = activeCard?.customEmotions.find(
-    (item) => item.id === activeMood,
-  );
+  const activeEmotion = activeCard?.availableEmotions.find((item) => item.id === activeMood);
   const portraitPath =
-    customMood?.imageUrl ||
-    activeCard?.emotionImages[activeMood as EmotionSlot] ||
+    (activeEmotion ? activeCard?.emotionImages[activeMood] || activeCard?.customEmotions.find((item) => item.id === activeMood)?.imageUrl : "") ||
     activeCard?.imageUrl ||
     "";
-  const moodLabel =
-    customMood?.name ||
-    moodNames[activeMood as EmotionSlot] ||
-    moodNames.default;
-  const moodDescription =
-    customMood?.description ||
-    activeCard?.emotionDescriptions[activeMood as EmotionSlot] ||
-    activeCard?.emotionDescriptions.default ||
-    "";
+  const moodLabel = activeEmotion?.name || "";
+  const moodDescription = activeEmotion?.description || "";
   return (
     <section className="grid h-[calc(100vh-9rem)] min-h-[560px] max-h-[760px] grid-cols-[220px_minmax(0,1fr)_260px] overflow-hidden rounded-[18px] border border-border bg-workspace">
       <aside className="min-h-0 overflow-y-auto border-r p-4">
@@ -929,12 +912,12 @@ function Experience({
               </div>
             )}
             <p className="text-sm font-medium text-foreground">{player}</p>
-            <div className="rounded-lg border bg-workspace px-2.5 py-2">
+            {activeEmotion && <div className="rounded-lg border bg-workspace px-2.5 py-2">
               <p className="font-medium text-foreground">
                 当前形象 · {moodLabel}
               </p>
               {moodDescription && <p className="mt-1">{moodDescription}</p>}
-            </div>
+            </div>}
             {[
               activeCard.identity,
               activeCard.attributes?.affiliation,

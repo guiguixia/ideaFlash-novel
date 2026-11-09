@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 import httpx
 import models
+from emotions import FIXED_EMOTION_META,FIXED_EMOTION_SLOTS,configured_emotion_states,configured_mood_ids,valid_configured_mood
 from auth import CurrentUser,get_current_user
 from database import Base,SessionLocal,engine,get_db,reset_legacy_schema,run_schema_migrations
 from schemas import *
@@ -46,8 +47,8 @@ def sess(x,full=False):
  d={"id":x.id,"scriptId":x.script_id,"title":x.title,"status":x.status,"turn":x.turn,"state":x.state or {},"createdAt":x.created_at.isoformat() if x.created_at else None}
  if full:d["history"]=x.history or []
  return d
-EMOTION_SLOTS=("default","thinking","puzzled","happy","low")
-DEFAULT_EMOTION_DESCRIPTIONS={"default":"角色的默认外貌与日常神态","thinking":"目光沉静，像在斟酌或推演","puzzled":"微微蹙眉，带着不解与迟疑","happy":"神情放松，流露轻快与愉悦","low":"目光低垂，情绪低落或压抑"}
+EMOTION_SLOTS=FIXED_EMOTION_SLOTS
+DEFAULT_EMOTION_DESCRIPTIONS={slot:meta[1] for slot,meta in FIXED_EMOTION_META.items()}
 MOOD_TAG_RE=re.compile(r"^\s*\[mood:([a-z][a-z0-9_-]{0,63})\]\s*$")
 MOOD_TAG_PREFIX_RE=re.compile(r"^\s*\[mood:([a-z][a-z0-9_-]{0,63})\]\s*")
 CHOICES_START="[choices]"
@@ -62,8 +63,8 @@ def custom_emotions(card):return [item for item in (card.custom_emotions or []) 
 def emotion_descriptions(card):
  saved=card.emotion_descriptions or {}
  return {slot:str(saved.get(slot) or (card.appearance if slot=="default" and card.appearance else DEFAULT_EMOTION_DESCRIPTIONS[slot])) for slot in EMOTION_SLOTS}
-def mood_ids(card):return set(EMOTION_SLOTS)|{str(item["id"]) for item in custom_emotions(card)}
-def valid_mood(card,value):return value if value in mood_ids(card) else "default"
+def mood_ids(card):return configured_mood_ids(card)
+def valid_mood(card,value):return valid_configured_mood(card,value)
 def normalize_role_chat_history(history):
  cleaned=[]
  for row in history or []:
@@ -81,7 +82,7 @@ def role_card(row):
  images={slot:image_url(path) for slot,path in (row.emotion_images or {}).items() if slot in EMOTION_SLOTS and path}
  if row.image_path:images["default"]=image_url(row.image_path)
  custom=[{"id":str(item["id"]),"name":str(item.get("name") or "自定义状态"),"description":str(item.get("description") or ""),"imageUrl":image_url(item["image_path"]) if item.get("image_path") else ""} for item in custom_emotions(row)]
- return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"dialogueExamples":row.dialogue_examples or [],"imageUrl":images.get("default",""),"emotionImages":images,"emotionDescriptions":emotion_descriptions(row),"customEmotions":custom,"roleMode":"replacement"}
+ return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"dialogueExamples":row.dialogue_examples or [],"imageUrl":images.get("default",""),"emotionImages":images,"emotionDescriptions":emotion_descriptions(row),"customEmotions":custom,"availableEmotions":configured_emotion_states(row),"roleMode":"replacement"}
 def role_chat(chat,full=False):
  d={"id":chat.id,"title":chat.title,"turn":chat.turn,"createdAt":chat.created_at.isoformat() if chat.created_at else None,"updatedAt":chat.updated_at.isoformat() if chat.updated_at else None}
  if full:d["history"]=normalize_role_chat_history(chat.history)
@@ -161,7 +162,7 @@ async def generate_session_turn(session_id:str,events:Queue):
   message=str(history[-2].get("content") or "").strip()
   player=str((x.state or {}).get("playerIdentity") or s.player_identity or "")
   card=db.query(models.ExperienceRoleCard).filter_by(script_id=s.id,name=player).first()
-  custom=[{"id":str(item.get("id") or ""),"name":str(item.get("name") or ""),"description":str(item.get("description") or "")} for item in custom_emotions(card)] if card else []
+  custom=configured_emotion_states(card) if card else []
   chunks=[];model="";mood="default";prefix="";waiting_for_mood=True;tail="";choices_raw="";reading_choices=False
   def emit_story_content(content:str):
    nonlocal tail,choices_raw,reading_choices

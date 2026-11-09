@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import threading
 from unittest.mock import AsyncMock, patch
@@ -8,6 +9,8 @@ os.environ["NOVEL_DATABASE_URL"] = "sqlite:////tmp/ideaFlash-story-test.db"
 from fastapi.testclient import TestClient
 from main import app, run_experience_build_in_worker
 from models import LLMConfig
+from prompts.experience import render_experience_mood_protocol
+from prompts.role_chat import mood_protocol
 from services import _model_request_options
 
 
@@ -16,6 +19,17 @@ def test_known_provider_options_disable_thinking_mode():
     assert _model_request_options(LLMConfig(base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen3-max")) == {"extra_body": {"enable_thinking": False}}
     assert _model_request_options(LLMConfig(base_url="https://open.bigmodel.cn/api/paas/v4", model="glm-4.7")) == {"extra_body": {"thinking": {"type": "disabled"}}}
     assert _model_request_options(LLMConfig(base_url="https://api.example.com", model="example-chat")) == {}
+
+
+def test_mood_protocol_only_contains_uploaded_states():
+    states = [{"id": "taunting", "name": "嘲讽", "description": "轻蔑回应"}]
+    private_prompt = mood_protocol(json.dumps(states, ensure_ascii=False))
+    experience_prompt = render_experience_mood_protocol(states)
+    assert "[mood:taunting]" in private_prompt
+    assert "[mood:happy]" not in private_prompt
+    assert "[mood:taunting]" in experience_prompt
+    assert "[mood:thinking]" not in experience_prompt
+    assert "当前角色形象状态" not in render_experience_mood_protocol([])
 
 
 def test_community_qr_uses_backend_proxy():
@@ -89,6 +103,12 @@ def test_experience_turn_strips_mood_tag_and_emits_mood_event():
         f"/api/works/{work['id']}/scripts/{script['id']}/role-cards",
         json={"name": "测试角色", "identity": "", "personality": "", "appearance": "", "background": "", "current_state": ""},
     ).json()["data"]
+    uploaded = client.post(
+        f"/api/works/{work['id']}/scripts/{script['id']}/role-cards/{card['id']}/image?slot=happy",
+        files={"file": ("happy.png", b"test-image", "image/png")},
+    )
+    assert uploaded.status_code == 200
+    assert uploaded.json()["data"]["availableEmotions"] == [{"id": "happy", "name": "开心", "description": "神情放松，流露轻快与愉悦"}]
 
     async def opening(*_args, **_kwargs):
         return "开场", "test-model"

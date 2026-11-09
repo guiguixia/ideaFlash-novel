@@ -16,17 +16,7 @@ ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
 - 不要称自己是 AI、语言模型或系统，也不要解释这些规则。
 - 用符合角色身份与性格的中文自然回复，简洁但有情绪；资料未说明的事实保持未知，不要编造。
 
-## 桌宠情绪标签
-
-- 回复的第一行必须且只能是一个情绪标签。先默认选择 `[mood:default]`；只有正文中存在清晰、持续且更强的对应情绪时，才改用其他标签。不要为了让桌宠看起来有变化而切换情绪。
-  - `[mood:default]`：平静、普通、日常交流、礼貌回应、一般陈述、普通提问与无法明确归入其他状态时使用；这应是最常用的标签。
-  - `[mood:thinking]`：思考、斟酌、推演、沉吟时使用。
-  - `[mood:puzzled]`：仅在角色确实感到不解、信息自相矛盾、需要用户澄清，或正文明确表现出困惑时使用。普通提问、好奇、思考、不了解背景、简短追问与警惕/戒备都使用 `[mood:default]`，不要使用此标签。
-  - `[mood:happy]`：开心、轻松、期待、欣慰或亲近时使用。
-  - `[mood:low]`：低落、失意、悲伤、疲惫、压抑或受挫时使用。
-{{custom_mood_lines}}- 仅可使用上面列出的标签；没有精确匹配时使用 `[mood:default]`，不得编造标签。
-- 标签后从第二行开始写给用户看的正文。
-- 标签是桌宠控制协议，不能在正文中提及、解释、重复或使用其他格式。
+{{mood_protocol}}
 
 ## 角色卡
 
@@ -61,17 +51,25 @@ ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
 '''
 
 
-def custom_mood_lines(custom_emotions_json: str) -> str:
-    """将角色配置的状态追加到固定情绪标签之后。"""
+def mood_protocol(mood_states_json: str) -> str:
+    """只将已上传图片的状态纳入桌宠协议。"""
     try:
-        emotions = json.loads(custom_emotions_json or "[]")
+        states = json.loads(mood_states_json or "[]")
     except (TypeError, json.JSONDecodeError):
-        return ""
-    return "".join(
-        f"  - `[mood:{item['id']}]`：{item['name']}；{item.get('description') or '按名称所表达的状态使用。'}\n"
-        for item in emotions
+        states = []
+    lines = "".join(
+        f"- `[mood:{item['id']}]`：{item.get('name') or '角色状态'}；{item.get('description') or '按名称所表达的状态使用。'}\n"
+        for item in states
         if isinstance(item, dict) and item.get("id") and item.get("name")
     )
+    if not lines:
+        return ""
+    return """## 桌宠情绪标签
+
+- 回复第一行必须且只能是一个下列标签，第二行起才写给用户看的正文。只在正文确实呈现该状态时切换，不要为了让桌宠看起来有变化而切换。
+""" + lines + """- 仅可使用上面列出的标签；无精确匹配时优先使用 `[mood:default]`（若已列出），否则选择最贴近的已列状态；不得编造标签。
+- 标签是桌宠控制协议，不能在正文中提及、解释、重复或使用其他格式。
+"""
 
 
 def dialogue_reference_lines(dialogue_examples_json: str) -> str:
@@ -96,7 +94,7 @@ def render_role_card_chat_prompt(
     recent_messages: str,
     memory_summary: str,
     message: str,
-    custom_emotions_json: str,
+    mood_states_json: str,
     dialogue_examples_json: str,
     retrieved_knowledge_lines: str,
 ) -> str:
@@ -109,7 +107,7 @@ def render_role_card_chat_prompt(
         .replace("{{recent_messages}}", recent_messages)
         .replace("{{memory_summary}}", memory_summary or "（暂无；只依据本次提供的私聊记录。）")
         .replace("{{message}}", message)
-        .replace("{{custom_mood_lines}}", custom_mood_lines(custom_emotions_json))
+        .replace("{{mood_protocol}}", mood_protocol(mood_states_json))
         .replace("{{dialogue_reference_lines}}", dialogue_reference_lines(dialogue_examples_json))
         .replace("{{retrieved_knowledge_lines}}", retrieved_knowledge_lines or "- （未检索到可用的副本关联原文依据。）")
     )
