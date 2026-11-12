@@ -7,6 +7,7 @@ import {
   GraduationCap,
   Library,
   LockKeyhole,
+  Bot,
   Mountain,
   Plus,
   Settings,
@@ -343,6 +344,15 @@ export function LibraryHome() {
         >
           <Library className="size-5 text-brand" />
           我的作品
+        </button>
+        <button
+          type="button"
+          onClick={() => nav("/wechat")}
+          title="微信接入"
+          aria-label="微信接入"
+          className="rounded-lg p-2 hover:bg-hover"
+        >
+          <Bot className="size-4" />
         </button>
         <button
           type="button"

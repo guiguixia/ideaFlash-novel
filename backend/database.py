@@ -101,3 +101,24 @@ def run_schema_migrations():
             if "emotion_descriptions" not in columns:
                 connection.exec_driver_sql("ALTER TABLE experience_role_cards ADD COLUMN emotion_descriptions JSON NOT NULL DEFAULT '{}'")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (9, CURRENT_TIMESTAMP)")
+        image_generation_config=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 10").first()
+        if not image_generation_config:
+            columns={column["name"] for column in inspect(engine).get_columns("llm_configs")}
+            for name,definition in {
+                "role_image_base_url":"VARCHAR(500) NOT NULL DEFAULT ''",
+                "role_image_api_key":"TEXT NOT NULL DEFAULT ''",
+                "role_image_model":"VARCHAR(160) NOT NULL DEFAULT ''",
+                "scene_image_base_url":"VARCHAR(500) NOT NULL DEFAULT ''",
+                "scene_image_api_key":"TEXT NOT NULL DEFAULT ''",
+                "scene_image_model":"VARCHAR(160) NOT NULL DEFAULT ''",
+            }.items():
+                if name not in columns:connection.exec_driver_sql(f"ALTER TABLE llm_configs ADD COLUMN {name} {definition}")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (10, CURRENT_TIMESTAMP)")
+        wechat_session_scope=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 11").first()
+        if not wechat_session_scope:
+            for table in ("experience_sessions","role_chat_sessions"):
+                columns={column["name"] for column in inspect(engine).get_columns(table)}
+                if "wechat_user_id" not in columns:
+                    connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN wechat_user_id VARCHAR(160) NOT NULL DEFAULT ''")
+                    connection.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_wechat_user_id ON {table} (wechat_user_id)")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (11, CURRENT_TIMESTAMP)")

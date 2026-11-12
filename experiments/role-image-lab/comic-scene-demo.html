@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>剧本刷 · 漫画演出实验</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+    :root { --ink:#161318; --paper:#f8f0dc; --gold:#f1c46d; --pink:#f785b2; --cyan:#83dae7; }
+    * { box-sizing:border-box; }
+    body { min-width:320px; min-height:100vh; margin:0; overflow:hidden; color:var(--paper); background:#08070a; font-family:'Noto Serif SC','Songti SC',serif; }
+    .stage { position:relative; min-height:100vh; isolation:isolate; background:#09080b; }
+    .scene { position:absolute; inset:0; z-index:-3; background:url('./output/scene-trio-20261109-235337/retirement-trio-comic.png') center/cover no-repeat; transform:scale(1.015); animation:scene-in 1.2s cubic-bezier(.2,.9,.2,1) both; }
+    .scene::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,rgba(3,4,8,.55),transparent 37%,transparent 60%,rgba(3,4,8,.48)),linear-gradient(0deg,rgba(4,3,7,.9),transparent 43%); }
+    .grain { position:absolute; inset:0; z-index:-1; opacity:.18; pointer-events:none; background-image:radial-gradient(rgba(255,255,255,.7) .6px,transparent .8px); background-size:4px 4px; mix-blend-mode:soft-light; }
+    header { display:flex; justify-content:space-between; align-items:flex-start; padding:clamp(17px,3vw,40px) clamp(18px,4vw,64px); }
+    .brand { display:flex; align-items:center; gap:12px; letter-spacing:.1em; font-size:12px; color:#fff4d8; text-shadow:0 2px 12px #000; }
+    .seal { display:grid; width:31px; height:31px; place-items:center; border:1px solid var(--gold); color:var(--gold); font-family:'Ma Shan Zheng',cursive; font-size:19px; transform:rotate(-4deg); }
+    .chapter { margin:0; max-width:340px; text-align:right; color:rgba(255,248,229,.8); font-size:12px; line-height:1.7; }
+    .chapter b { display:block; color:#fff4d8; font-size:14px; letter-spacing:.12em; }
+    .spot { position:absolute; top:20%; width:22vw; height:54%; border:1px solid rgba(255,255,255,.25); opacity:0; pointer-events:none; transition:.55s; }
+    .spot.xiaoyan { left:6%; border-right:0; border-radius:60% 0 0 60%; box-shadow:-20px 0 55px rgba(85,216,235,.18); }
+    .spot.xun { left:24%; width:18vw; border-left:0; border-right:0; border-radius:50%; box-shadow:0 0 55px rgba(138,225,219,.2); }
+    .spot.nalan { right:6%; border-left:0; border-radius:0 60% 60% 0; box-shadow:20px 0 55px rgba(255,102,171,.18); }
+    .stage[data-speaker='萧炎'] .spot.xiaoyan, .stage[data-speaker='萧薰儿'] .spot.xun, .stage[data-speaker='纳兰嫣然'] .spot.nalan { opacity:1; }
+    .stage[data-speaker='萧炎'] .scene { transform:scale(1.04) translateX(1%); }
+    .stage[data-speaker='纳兰嫣然'] .scene { transform:scale(1.04) translateX(-1%); }
+    .hud { position:absolute; right:clamp(18px,4vw,64px); bottom:clamp(195px,25vh,260px); display:flex; gap:8px; }
+    button { font:inherit; }
+    .hud button { color:#fbeccf; cursor:pointer; background:rgba(14,12,17,.58); border:1px solid rgba(250,222,166,.46); border-radius:999px; padding:7px 12px; font-size:11px; letter-spacing:.06em; backdrop-filter:blur(8px); transition:.2s; }
+    .hud button:hover, .hud button[aria-pressed='true'] { color:#1b1515; background:#f2c76f; border-color:#f2c76f; }
+    .mode-switch { position:absolute; left:clamp(18px,4vw,64px); bottom:clamp(195px,25vh,260px); display:flex; gap:7px; }
+    .mode-switch button { color:#fbeccf; cursor:pointer; background:rgba(14,12,17,.58); border:1px solid rgba(250,222,166,.46); border-radius:999px; padding:7px 12px; font-size:11px; letter-spacing:.06em; backdrop-filter:blur(8px); transition:.2s; }
+    .mode-switch button.active { color:#1b1515; background:#f2c76f; border-color:#f2c76f; }
+    .dialogue { position:absolute; right:clamp(14px,3vw,44px); bottom:clamp(14px,3vw,42px); left:clamp(14px,3vw,44px); min-height:168px; padding:24px clamp(21px,4vw,52px) 20px; border:1px solid rgba(255,238,196,.74); background:linear-gradient(110deg,rgba(13,11,14,.93),rgba(22,18,25,.83)); box-shadow:0 18px 55px rgba(0,0,0,.38),inset 0 0 35px rgba(255,218,148,.06); clip-path:polygon(0 11px,11px 0,calc(100% - 11px) 0,100% 11px,100% calc(100% - 11px),calc(100% - 11px) 100%,11px 100%,0 calc(100% - 11px)); backdrop-filter:blur(13px); }
+    .dialogue::before { content:''; position:absolute; top:0; left:0; width:170px; height:2px; background:linear-gradient(90deg,var(--gold),transparent); }
+    .speaker { position:absolute; top:-19px; left:clamp(15px,3vw,35px); min-width:128px; padding:8px 18px 9px; color:#1c1314; text-align:center; letter-spacing:.22em; background:var(--gold); font-family:'Ma Shan Zheng','Noto Serif SC',serif; font-size:19px; box-shadow:0 5px 15px rgba(0,0,0,.32); }
+    .speaker[data-name='纳兰嫣然'] { background:var(--pink); }
+    .speaker[data-name='萧薰儿'] { background:var(--cyan); }
+    .line { max-width:980px; min-height:57px; margin:0; color:#fff8e6; font-size:clamp(17px,2.3vw,25px); font-weight:500; line-height:1.75; letter-spacing:.055em; text-shadow:0 1px 5px #000; }
+    .line.immersive { display:grid; gap:11px; max-width:none; min-height:72px; }
+    .story-block { padding-left:15px; border-left:2px solid rgba(241,196,109,.45); }
+    .story-block.narration { color:rgba(255,248,230,.88); font-size:.88em; }
+    .story-block.dialogue { border-left-color:var(--pink); background:linear-gradient(90deg,rgba(247,133,178,.12),transparent 75%); padding:7px 12px; }
+    .story-block.dialogue[data-speaker='萧炎'] { border-left-color:var(--gold); }
+    .story-block.dialogue[data-speaker='萧薰儿'] { border-left-color:var(--cyan); }
+    .block-name { display:block; margin-bottom:2px; color:var(--gold); font-size:12px; font-weight:700; letter-spacing:.16em; }
+    .cursor { display:inline-block; width:2px; height:1.12em; margin-left:5px; vertical-align:-.14em; background:var(--gold); animation:blink .8s infinite; }
+    .actions { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-top:13px; }
+    .choices { display:flex; flex-wrap:wrap; gap:8px; }
+    .choice { color:rgba(255,245,221,.9); cursor:pointer; background:rgba(255,255,255,.055); border:1px solid rgba(255,239,202,.29); padding:7px 11px; font-size:12px; transition:.18s; }
+    .choice:hover { color:#1d1616; background:#f6ce78; border-color:#f6ce78; transform:translateY(-2px); }
+    .next { flex:none; color:#271914; cursor:pointer; border:0; padding:10px 15px; background:#f4cc77; box-shadow:3px 3px 0 rgba(0,0,0,.35); font-weight:700; letter-spacing:.12em; }
+    .next:active { transform:translate(2px,2px); box-shadow:1px 1px 0 rgba(0,0,0,.35); }
+    .hint { position:absolute; bottom:calc(100% + 13px); left:0; color:rgba(255,247,226,.55); font-size:11px; letter-spacing:.12em; }
+    .flash { animation:flash .34s ease-out; }
+    @keyframes scene-in { from { opacity:0; transform:scale(1.1); } to { opacity:1; } }
+    @keyframes blink { 50% { opacity:0; } }
+    @keyframes flash { 0% { filter:brightness(1.6); } 100% { filter:none; } }
+    @media (max-width:640px) { .chapter { display:none; } .dialogue { min-height:214px; } .actions { align-items:stretch; flex-direction:column; } .next { align-self:flex-end; } .spot { display:none; } }
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage" data-speaker="萧炎">
+    <div class="scene" id="scene"></div><div class="grain"></div>
+    <div class="spot xiaoyan"></div><div class="spot xun"></div><div class="spot nalan"></div>
+    <header><div class="brand"><span class="seal">剧</span><span>剧本刷 · 沉浸演出实验</span></div><p class="chapter"><b>陨落的天才 · 退婚</b>大厅立下三年之约</p></header>
+    <nav class="hud"><button id="auto" aria-pressed="false">自动播放</button><button id="restart">重看</button></nav>
+    <nav class="mode-switch" aria-label="展示模式"><button id="immersive" class="active">沉浸演出</button><button id="classic">对话记录</button></nav>
+    <section class="dialogue" aria-live="polite">
+      <span class="hint">点击场景或按 Enter 继续</span>
+      <div class="speaker" id="speaker"></div>
+      <div class="line" id="line"></div>
+      <div class="actions"><div class="choices" id="choices"></div><button class="next" id="next">继续 ▸</button></div>
+    </section>
+  </main>
+  <script>
+    const script = [
+      { focus:'旁白', blocks:[{ type:'narration', text:'迎客大厅内，斜阳越过门扉。萧炎把无字的契约按在桌上，薰儿静静站在他身后。' }], choices:[] },
+      { focus:'纳兰嫣然', blocks:[{ type:'dialogue', speaker:'纳兰嫣然', text:'今日之事，的确是我莽撞了。但三年之后，你来云岚宗向我挑战。你可敢接？' },{ type:'narration', text:'她的目光越过长桌，落在沉默的少年身上。' }], choices:['直视纳兰嫣然','握紧拳头','看向父亲'] },
+      { focus:'萧炎', blocks:[{ type:'narration', text:'大厅中的窃语停了一瞬。' },{ type:'dialogue', speaker:'萧炎', text:'三十年河东，三十年河西，莫欺少年穷！三年之后，我萧炎必会亲上云岚宗。' }], choices:['立下三年之约','将契约推向前方','压下怒意'] },
+      { focus:'萧薰儿', blocks:[{ type:'dialogue', speaker:'萧薰儿', text:'萧炎哥哥，薰儿相信你会重新站起来。今日失去的荣耀，你会亲手取回。' }], choices:['继续体验','返回会话'] },
+    ];
+    const stage = document.querySelector('#stage'), scene = document.querySelector('#scene'), speaker = document.querySelector('#speaker'), line = document.querySelector('#line'), choices = document.querySelector('#choices'), next = document.querySelector('#next'), auto = document.querySelector('#auto'), immersive = document.querySelector('#immersive'), classic = document.querySelector('#classic');
+    let index = 0, typing = false, autoTimer = 0, mode = 'immersive';
+    const textFor = row => row.blocks.map(block => block.type === 'dialogue' ? `${block.speaker}：${block.text}` : block.text).join('\n');
+    function renderImmersive(row) { line.className = 'line immersive'; line.innerHTML = ''; row.blocks.forEach(block => { const item = document.createElement('div'); item.className = `story-block ${block.type}`; if (block.speaker) item.dataset.speaker = block.speaker; if (block.type === 'dialogue') { const name = document.createElement('span'); name.className = 'block-name'; name.textContent = block.speaker; item.append(name); } item.append(document.createTextNode(block.text)); line.append(item); }); }
+    function show() {
+      clearTimeout(autoTimer); const row = script[index]; stage.dataset.speaker = row.focus; speaker.textContent = mode === 'immersive' ? '场景演出' : row.focus; speaker.dataset.name = row.focus; choices.innerHTML = '';
+      const done = () => { typing = false; row.choices.forEach(text => { const button = document.createElement('button'); button.className = 'choice'; button.textContent = text; button.onclick = () => { scene.classList.remove('flash'); void scene.offsetWidth; scene.classList.add('flash'); index = Math.min(index + 1, script.length - 1); show(); }; choices.append(button); }); if (auto.getAttribute('aria-pressed') === 'true') autoTimer = setTimeout(advance, 1700); };
+      if (mode === 'immersive') { renderImmersive(row); done(); return; }
+      line.className = 'line'; line.textContent = ''; typing = true; const value = textFor(row); let at = 0; const type = () => { line.textContent = value.slice(0, ++at); if (at < value.length) return setTimeout(type, 26); line.insertAdjacentHTML('beforeend','<i class="cursor"></i>'); done(); }; type();
+    }
+    function advance() { if (typing) { line.textContent = script[index].text; typing = false; return; } index = (index + 1) % script.length; show(); }
+    next.onclick = advance; document.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); advance(); } }); stage.addEventListener('click', event => { if (!event.target.closest('button')) advance(); });
+    auto.onclick = () => { const on = auto.getAttribute('aria-pressed') !== 'true'; auto.setAttribute('aria-pressed', String(on)); auto.textContent = on ? '自动播放中' : '自动播放'; if (on && !typing) autoTimer = setTimeout(advance, 900); else clearTimeout(autoTimer); };
+    immersive.onclick = () => { mode = 'immersive'; immersive.classList.add('active'); classic.classList.remove('active'); show(); };
+    classic.onclick = () => { mode = 'classic'; classic.classList.add('active'); immersive.classList.remove('active'); show(); };
+    document.querySelector('#restart').onclick = () => { index = 0; show(); }; show();
+  </script>
+</body>
+</html>

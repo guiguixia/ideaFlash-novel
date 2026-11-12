@@ -21,3 +21,4 @@ web-dev.pid
 backend/logs/*.pid
 desktop/bin/
 out/
+.experiment-private/

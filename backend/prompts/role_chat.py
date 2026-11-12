@@ -22,6 +22,13 @@ ROLE_CARD_CHAT_PROMPT = '''你现在扮演副本角色「{{role_name}}」。
 
 {{profile_json}}
 
+## 用户身份设定
+
+{{player_profile_json}}
+
+- 这是用户在应用中统一设定的虚构身份，所有角色私聊都会共用；若字段为空则不要自行补全。
+- 可据此调整称呼、互动距离与态度，但不得把设定写成副本既定事实或推进副本剧情。
+
 ## 角色原文对白参考
 
 - 以下内容仅用于学习角色的称呼、句长、用词和语气；不得照抄，也不得把对白中的事件当作当前事实。
@@ -90,6 +97,7 @@ def render_role_card_chat_prompt(
     *,
     role_name: str,
     profile_json: str,
+    player_profile_json: str,
     world_json: str,
     recent_messages: str,
     memory_summary: str,
@@ -103,6 +111,7 @@ def render_role_card_chat_prompt(
         ROLE_CARD_CHAT_PROMPT
         .replace("{{role_name}}", role_name)
         .replace("{{profile_json}}", profile_json)
+        .replace("{{player_profile_json}}", player_profile_json or "（用户未设置身份资料。）")
         .replace("{{world_json}}", world_json)
         .replace("{{recent_messages}}", recent_messages)
         .replace("{{memory_summary}}", memory_summary or "（暂无；只依据本次提供的私聊记录。）")

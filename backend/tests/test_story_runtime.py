@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 os.environ["NOVEL_DATABASE_URL"] = "sqlite:////tmp/ideaFlash-story-test.db"
 
 from fastapi.testclient import TestClient
-from main import app, run_experience_build_in_worker
+from main import app, normalize_story_reply, parse_story_blocks, run_experience_build_in_worker, script_opening_cache, story_opening_payload
 from models import LLMConfig
 from prompts.experience import render_experience_mood_protocol
 from prompts.role_chat import mood_protocol
@@ -30,6 +30,27 @@ def test_mood_protocol_only_contains_uploaded_states():
     assert "[mood:taunting]" in experience_prompt
     assert "[mood:thinking]" not in experience_prompt
     assert "当前角色形象状态" not in render_experience_mood_protocol([])
+
+
+def test_story_block_protocol_is_normalized_for_classic_history():
+    blocks, content = parse_story_blocks("[narration] 大厅忽然安静下来。\n[dialogue:纳兰嫣然] 我今日前来，是为了退婚。")
+    assert blocks == [
+        {"type": "narration", "content": "大厅忽然安静下来。"},
+        {"type": "dialogue", "speaker": "纳兰嫣然", "content": "我今日前来，是为了退婚。"},
+    ]
+    assert content == "大厅忽然安静下来。\n\n纳兰嫣然：我今日前来，是为了退婚。"
+    content, blocks, mood, suggestions = normalize_story_reply("[mood:low]\n[narration] 大厅忽然安静下来。\n[choices]\n- 保持沉默\n[/choices]")
+    assert content == "大厅忽然安静下来。"
+    assert blocks == [{"type": "narration", "content": "大厅忽然安静下来。"}]
+    assert mood == "low"
+    assert suggestions == ["保持沉默"]
+
+
+def test_story_opening_cache_reuses_the_same_opening_for_the_same_player():
+    opening = story_opening_payload({"content": "大厅忽然安静下来。", "model": "test", "suggestions": ["观察来客"]})
+    assert opening == ("大厅忽然安静下来。", "test", [{"type": "narration", "content": "大厅忽然安静下来。"}], "default", ["观察来客"])
+    script = type("Script", (), {"snapshot": {"canonicalOpenings": {"萧炎": {"content": "大厅忽然安静下来。", "model": "test", "suggestions": ["观察来客"]}}}})()
+    assert script_opening_cache(script, "萧炎") == opening
 
 
 def test_community_qr_uses_backend_proxy():
@@ -125,6 +146,7 @@ def test_experience_turn_strips_mood_tag_and_emits_mood_event():
     assert '"mood": "happy"' in response.text
     stored = client.get(f"/api/works/{work['id']}/sessions/{session['id']}").json()["data"]
     assert stored["history"][-1]["content"] == "场景因你的到来而明亮起来。"
+    assert stored["history"][-1]["blocks"] == [{"type": "narration", "content": "场景因你的到来而明亮起来。"}]
     assert stored["history"][-1]["mood"] == "happy"
     assert stored["history"][-1]["suggestions"] == ["向同伴道谢", "观察四周变化"]
     assert "[mood:" not in stored["history"][-1]["content"]

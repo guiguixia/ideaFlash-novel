@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ImagePlus, MessageCircle, Plus, Sparkles, Trash2, UserPlus, X } from 'lucide-react'
+import { Download, ImagePlus, MessageCircle, Plus, Sparkles, UserPlus, X } from 'lucide-react'
 import { kernelDelete, kernelGet, kernelPatch, kernelPost, kernelStreamPost, kernelUpload, kernelUrl } from './lib/kernel-api'
 
 type Script = { id: string; title: string; characters: string[] }
@@ -8,6 +8,7 @@ type CustomEmotion = { id: string; name: string; description: string; imageUrl: 
 type Card = { id: string; name: string; identity: string; imageUrl: string; emotionImages: Partial<Record<EmotionSlot, string>>; emotionDescriptions: Record<EmotionSlot, string>; customEmotions: CustomEmotion[] }
 type Message = { role: 'user' | 'assistant'; content: string; status?: 'generating' | 'failed'; error?: string }
 type ChatSummary = { id: string; title: string; turn: number; updatedAt: string | null }
+type PlayerProfile = { identity: string; gender: string; age: string; description: string }
 type Chat = ChatSummary & { history: Message[] }
 type Work = { scripts: Script[] }
 
@@ -27,12 +28,18 @@ export function RoleCardsV2({ workId, scriptId, autoOpenCardId = '' }: { workId:
   const [selected, setSelected] = useState(scriptId)
   const [cards, setCards] = useState<Card[]>([])
   const [imageCard, setImageCard] = useState<Card | null>(null)
+  const [generationTarget, setGenerationTarget] = useState<{ card: Card; slot: string; title: string; initialDescription: string } | null>(null)
+  const [generationDescription, setGenerationDescription] = useState('')
+  const [generationReferences, setGenerationReferences] = useState<File[]>([])
+  const [generatingImage, setGeneratingImage] = useState(false)
   const [customDraft, setCustomDraft] = useState({ name: '', description: '' })
   const [chatCard, setChatCard] = useState<Card | null>(null)
   const [sessions, setSessions] = useState<ChatSummary[]>([])
   const [chat, setChat] = useState<Chat | null>(null)
   const [input, setInput] = useState('')
   const [editingTitle, setEditingTitle] = useState<string | null>(null)
+  const [profileDialog, setProfileDialog] = useState(false)
+  const [playerProfile, setPlayerProfile] = useState<PlayerProfile>({ identity: '', gender: '', age: '', description: '' })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [handledAutoOpen, setHandledAutoOpen] = useState('')
@@ -64,6 +71,27 @@ export function RoleCardsV2({ workId, scriptId, autoOpenCardId = '' }: { workId:
     if (list) list.scrollTop = list.scrollHeight
   }, [chat?.id, chat?.history])
 
+  useEffect(() => {
+    if (!chatCard || busy) return
+    let cancelled = false
+    const refreshChat = async () => {
+      try {
+        const rows = await kernelGet<ChatSummary[]>(chatBase)
+        if (cancelled) return
+        setSessions(rows)
+        const selectedId = chat?.id && rows.some((item) => item.id === chat.id) ? chat.id : rows[0]?.id
+        if (selectedId) {
+          const latest = await kernelGet<Chat>(`${chatBase}/${selectedId}`)
+          if (!cancelled) setChat(latest)
+        }
+      } catch {
+        // 后台同步失败不打断用户正在进行的私聊；下一轮轮询会自动重试。
+      }
+    }
+    const timer = window.setInterval(() => void refreshChat(), 2500)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [busy, chat?.id, chatBase, chatCard])
+
   const script = scripts.find((item) => item.id === selected)
 
   const create = async (name: string) => {
@@ -87,6 +115,27 @@ export function RoleCardsV2({ workId, scriptId, autoOpenCardId = '' }: { workId:
       const updated = await kernelUpload<Card>(`${base}/${card.id}/image?slot=${slot}`, form)
       replaceCard(updated)
     } catch (cause) { setError(failure(cause, '图片上传失败')) }
+  }
+
+  const openImageGeneration = (card: Card, slot: string, title: string, initialDescription: string) => {
+    setGenerationTarget({ card, slot, title, initialDescription })
+    setGenerationDescription(initialDescription)
+    setGenerationReferences([])
+  }
+
+  const generateImage = async () => {
+    if (!generationTarget || !generationDescription.trim() || generationReferences.length < 1) return
+    try {
+      setGeneratingImage(true)
+      setError('')
+      const form = new FormData()
+      form.append('slot', generationTarget.slot)
+      form.append('description', generationDescription.trim())
+      generationReferences.forEach((file) => form.append('reference_images', file))
+      const updated = await kernelUpload<Card>(`${base}/${generationTarget.card.id}/generate-image`, form)
+      replaceCard(updated)
+      setGenerationTarget(null)
+    } catch (cause) { setError(failure(cause, '角色形象生成失败')) } finally { setGeneratingImage(false) }
   }
 
   const removeEmotionImage = async (card: Card, slot: EmotionSlot) => {
@@ -180,15 +229,33 @@ export function RoleCardsV2({ workId, scriptId, autoOpenCardId = '' }: { workId:
     } catch (cause) { setError(failure(cause, '修改会话名称失败')) } finally { setEditingTitle(null) }
   }
 
-  const deleteSession = async () => {
-    if (!chat || !window.confirm(`确认删除「${chat.title}」吗？该聊天记录无法恢复。`)) return
+  const savePlayerProfile = async () => {
     try {
       setBusy(true)
-      await kernelDelete(`${chatBase}/${chat.id}`)
-      const remaining = sessions.filter((item) => item.id !== chat.id)
+      await kernelPatch<PlayerProfile>('/api/profile', playerProfile)
+      setProfileDialog(false)
+    } catch (cause) { setError(failure(cause, '保存我的设定失败')) } finally { setBusy(false) }
+  }
+
+  const openProfile = async () => {
+    try {
+      setError('')
+      setPlayerProfile(await kernelGet<PlayerProfile>('/api/profile'))
+      setProfileDialog(true)
+    } catch (cause) { setError(failure(cause, '加载我的设定失败')) }
+  }
+
+  const deleteSession = async (target: ChatSummary | Chat | null = chat) => {
+    if (!target || !window.confirm(`确认删除「${target.title}」吗？该聊天记录无法恢复。`)) return
+    try {
+      setBusy(true)
+      await kernelDelete(`${chatBase}/${target.id}`)
+      const remaining = sessions.filter((item) => item.id !== target.id)
       setSessions(remaining)
-      setChat(null)
-      if (remaining[0]) await selectSession(remaining[0].id)
+      if (chat?.id === target.id) {
+        setChat(null)
+        if (remaining[0]) await selectSession(remaining[0].id)
+      }
     } catch (cause) { setError(failure(cause, '删除私聊失败')) } finally { setBusy(false) }
   }
 
@@ -255,20 +322,32 @@ export function RoleCardsV2({ workId, scriptId, autoOpenCardId = '' }: { workId:
               {image ? <img src={kernelUrl(image)} alt={slot.title} className="size-20 shrink-0 rounded-lg object-cover" /> : <div className="grid size-20 shrink-0 place-items-center rounded-lg border border-dashed text-muted-foreground"><div className="text-center"><ImagePlus className="mx-auto size-5" /><span className="mt-1 block text-[10px]">悬空</span></div></div>}
               <div className="min-w-0 flex-1"><h4 className="font-medium">{slot.title}{slot.id === 'default' && <span className="ml-2 text-xs text-brand">必填</span>}</h4><p className="mt-1 text-xs leading-5 text-muted-foreground">{slot.hint}</p><textarea value={description} onChange={(event) => setImageCard((current) => current ? { ...current, emotionDescriptions: { ...current.emotionDescriptions, [slot.id]: event.target.value } } : current)} onBlur={(event) => void saveEmotionDescription(imageCard, slot.id, event.currentTarget.value)} maxLength={160} rows={2} className="mt-2 w-full resize-none rounded border bg-workspace px-2 py-1 text-xs leading-5" placeholder="描述该状态下的外貌或神态" aria-label={`${slot.title}形象描述`} /></div>
             </div>
-            <div className="flex gap-2 border-t px-3 py-2"><label className="cursor-pointer rounded-md border px-2.5 py-1 text-xs hover:bg-hover">{image ? '替换图片' : '上传图片'}<input hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(imageCard, slot.id, file); event.currentTarget.value = '' }} /></label>{image && slot.id !== 'default' && <button onClick={() => void removeEmotionImage(imageCard, slot.id)} className="rounded-md px-2.5 py-1 text-xs text-destructive hover:bg-hover">删除</button>}</div>
+            <div className="flex flex-wrap gap-2 border-t px-3 py-2"><label className="cursor-pointer rounded-md border px-2.5 py-1 text-xs hover:bg-hover">{image ? '替换图片' : '上传图片'}<input hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(imageCard, slot.id, file); event.currentTarget.value = '' }} /></label><button onClick={() => openImageGeneration(imageCard, slot.id, slot.title, description)} className="rounded-md border border-brand-border px-2.5 py-1 text-xs text-brand hover:bg-brand-soft"><Sparkles className="mr-1 inline size-3" />AI 生成</button>{image && <a href={kernelUrl(image)} download={`${imageCard.name}-${slot.title}`} className="rounded-md border px-2.5 py-1 text-xs hover:bg-hover"><Download className="mr-1 inline size-3" />下载</a>}{image && <button onClick={() => void removeEmotionImage(imageCard, slot.id)} className="rounded-md px-2.5 py-1 text-xs text-destructive hover:bg-hover">删除</button>}</div>
           </article>
         })}</div>
-        <div className="mt-6 border-t pt-5"><div className="flex items-center justify-between"><div><h4 className="font-medium">角色专属状态</h4><p className="mt-1 text-xs text-muted-foreground">只有上传图片的状态才会在聊天与剧情体验中启用。</p></div><span className="text-xs text-muted-foreground">{imageCard.customEmotions.length}/5</span></div>{imageCard.customEmotions.length ? <div className="mt-3 grid gap-3 sm:grid-cols-2">{imageCard.customEmotions.map((emotion) => <article key={emotion.id} className="overflow-hidden rounded-xl border bg-surface"><div className="flex gap-3 p-3">{emotion.imageUrl ? <img src={kernelUrl(emotion.imageUrl)} alt={emotion.name} className="size-20 shrink-0 rounded-lg object-cover" /> : <div className="grid size-20 shrink-0 place-items-center rounded-lg border border-dashed text-muted-foreground"><div className="text-center"><ImagePlus className="mx-auto size-5" /><span className="mt-1 block text-[10px]">未启用</span></div></div>}<div className="min-w-0 flex-1"><input value={emotion.name} onChange={(event) => setImageCard((current) => current ? { ...current, customEmotions: current.customEmotions.map((item) => item.id === emotion.id ? { ...item, name: event.target.value } : item) } : current)} onBlur={() => void saveCustomEmotion(imageCard, emotion)} maxLength={40} className="w-full rounded border bg-workspace px-2 py-1 text-sm font-medium" placeholder="状态名称" /><textarea value={emotion.description} onChange={(event) => setImageCard((current) => current ? { ...current, customEmotions: current.customEmotions.map((item) => item.id === emotion.id ? { ...item, description: event.target.value } : item) } : current)} onBlur={() => void saveCustomEmotion(imageCard, emotion)} maxLength={160} rows={2} className="mt-2 w-full resize-none rounded border bg-workspace px-2 py-1 text-xs leading-5" placeholder="状态描述，例如：动用异火、战斗爆发时" aria-label={`${emotion.name || '自定义状态'}描述`} /></div></div><div className="flex gap-2 border-t px-3 py-2"><label className="cursor-pointer rounded-md border px-2.5 py-1 text-xs hover:bg-hover">{emotion.imageUrl ? '替换图片' : '上传图片'}<input hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadCustomEmotion(imageCard, emotion, file); event.currentTarget.value = '' }} /></label><button onClick={() => void deleteCustomEmotion(imageCard, emotion)} className="rounded-md px-2.5 py-1 text-xs text-destructive hover:bg-hover">删除状态</button></div></article>)}</div> : null}{imageCard.customEmotions.length < 5 && <div className="mt-3 grid gap-2 rounded-xl border border-dashed p-3 sm:grid-cols-[1fr_1.5fr_auto]"><input value={customDraft.name} onChange={(event) => setCustomDraft((current) => ({ ...current, name: event.target.value }))} maxLength={40} placeholder="状态名称，例如：灵焰" className="rounded border bg-surface px-2 py-2 text-sm" /><input value={customDraft.description} onChange={(event) => setCustomDraft((current) => ({ ...current, description: event.target.value }))} maxLength={160} placeholder="状态描述，例如：动用异火、战斗爆发时" className="rounded border bg-surface px-2 py-2 text-sm" /><button onClick={() => void createCustomEmotion(imageCard)} disabled={!customDraft.name.trim()} className="rounded-lg bg-foreground px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">新增状态</button></div>}</div>
+        <div className="mt-6 border-t pt-5"><div className="flex items-center justify-between"><div><h4 className="font-medium">角色专属状态</h4><p className="mt-1 text-xs text-muted-foreground">只有配置图片的状态才会在聊天与剧情体验中启用。</p></div><span className="text-xs text-muted-foreground">{imageCard.customEmotions.length}/5</span></div>{imageCard.customEmotions.length ? <div className="mt-3 grid gap-3 sm:grid-cols-2">{imageCard.customEmotions.map((emotion) => <article key={emotion.id} className="overflow-hidden rounded-xl border bg-surface"><div className="flex gap-3 p-3">{emotion.imageUrl ? <img src={kernelUrl(emotion.imageUrl)} alt={emotion.name} className="size-20 shrink-0 rounded-lg object-cover" /> : <div className="grid size-20 shrink-0 place-items-center rounded-lg border border-dashed text-muted-foreground"><div className="text-center"><ImagePlus className="mx-auto size-5" /><span className="mt-1 block text-[10px]">未启用</span></div></div>}<div className="min-w-0 flex-1"><input value={emotion.name} onChange={(event) => setImageCard((current) => current ? { ...current, customEmotions: current.customEmotions.map((item) => item.id === emotion.id ? { ...item, name: event.target.value } : item) } : current)} onBlur={() => void saveCustomEmotion(imageCard, emotion)} maxLength={40} className="w-full rounded border bg-workspace px-2 py-1 text-sm font-medium" placeholder="状态名称" /><textarea value={emotion.description} onChange={(event) => setImageCard((current) => current ? { ...current, customEmotions: current.customEmotions.map((item) => item.id === emotion.id ? { ...item, description: event.target.value } : item) } : current)} onBlur={() => void saveCustomEmotion(imageCard, emotion)} maxLength={160} rows={2} className="mt-2 w-full resize-none rounded border bg-workspace px-2 py-1 text-xs leading-5" placeholder="状态描述，例如：动用异火、战斗爆发时" aria-label={`${emotion.name || '自定义状态'}描述`} /></div></div><div className="flex flex-wrap gap-2 border-t px-3 py-2"><label className="cursor-pointer rounded-md border px-2.5 py-1 text-xs hover:bg-hover">{emotion.imageUrl ? '替换图片' : '上传图片'}<input hidden type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadCustomEmotion(imageCard, emotion, file); event.currentTarget.value = '' }} /></label><button onClick={() => openImageGeneration(imageCard, emotion.id, emotion.name || '自定义状态', emotion.description)} className="rounded-md border border-brand-border px-2.5 py-1 text-xs text-brand hover:bg-brand-soft"><Sparkles className="mr-1 inline size-3" />AI 生成</button><button onClick={() => void deleteCustomEmotion(imageCard, emotion)} className="rounded-md px-2.5 py-1 text-xs text-destructive hover:bg-hover">删除状态</button></div></article>)}</div> : null}{imageCard.customEmotions.length < 5 && <div className="mt-3 grid gap-2 rounded-xl border border-dashed p-3 sm:grid-cols-[1fr_1.5fr_auto]"><input value={customDraft.name} onChange={(event) => setCustomDraft((current) => ({ ...current, name: event.target.value }))} maxLength={40} placeholder="状态名称，例如：灵焰" className="rounded border bg-surface px-2 py-2 text-sm" /><input value={customDraft.description} onChange={(event) => setCustomDraft((current) => ({ ...current, description: event.target.value }))} maxLength={160} placeholder="状态描述，例如：动用异火、战斗爆发时" className="rounded border bg-surface px-2 py-2 text-sm" /><button onClick={() => void createCustomEmotion(imageCard)} disabled={!customDraft.name.trim()} className="rounded-lg bg-foreground px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">新增状态</button></div>}</div>
+      </section>
+    </div>}
+
+    {generationTarget && <div className="fixed inset-0 z-[80] grid place-items-center bg-black/45 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !generatingImage) setGenerationTarget(null) }}>
+      <section role="dialog" aria-modal="true" aria-label={`AI 生成 ${generationTarget.card.name} 的形象`} className="w-full max-w-xl rounded-[22px] border bg-workspace p-5 shadow-[var(--shadow-floating-strong)]">
+        <header className="flex items-start justify-between gap-4"><div><p className="text-xs text-brand">角色形象生成</p><h3 className="mt-1 text-xl font-semibold">{generationTarget.card.name} · {generationTarget.title}</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">上传 1—3 张人物或服装参考图，生成前仅会使用本角色资料与下方描述。</p></div><button onClick={() => !generatingImage && setGenerationTarget(null)} aria-label="关闭角色形象生成" className="rounded-lg p-2 hover:bg-hover disabled:opacity-50" disabled={generatingImage}><X className="size-4" /></button></header>
+        <label className="mt-5 block text-sm">参考图（1—3 张）<input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => { const files = Array.from(event.target.files || []).slice(0, 3); setGenerationReferences(files); event.currentTarget.value = '' }} className="mt-1 block w-full rounded-lg border bg-surface px-3 py-2 text-sm" /></label>
+        <p className="mt-2 text-xs text-muted-foreground">{generationReferences.length ? generationReferences.map((file) => file.name).join('、') : '可优先上传正面形象、服装或饰品参考图。'}</p>
+        <div className="mt-4 overflow-hidden rounded-xl border text-sm"><label className="grid grid-cols-[132px_minmax(0,1fr)] border-b"><span className="bg-active px-3 py-2.5 font-medium">Character</span><input readOnly value={generationTarget.card.name} className="min-w-0 bg-workspace px-3 py-2.5 text-muted-foreground" /></label><label className="grid grid-cols-[132px_minmax(0,1fr)] border-b"><span className="bg-active px-3 py-2.5 font-medium">Target state</span><input value={generationDescription} onChange={(event) => setGenerationDescription(event.target.value)} maxLength={1600} placeholder="例如：神情威严沉稳，自然站立" className="min-w-0 bg-workspace px-3 py-2.5 outline-none ring-brand focus:ring-1" /></label><label className="grid grid-cols-[132px_minmax(0,1fr)] border-b"><span className="bg-active px-3 py-2.5 font-medium">Reference priority</span><input readOnly value="服饰、饰品、发型与画风严格以参考图为准" className="min-w-0 bg-workspace px-3 py-2.5 text-muted-foreground" /></label><label className="grid grid-cols-[132px_minmax(0,1fr)] border-b"><span className="bg-active px-3 py-2.5 font-medium">Background</span><input readOnly value="透明背景（PNG Alpha），无场景、地面与投影" className="min-w-0 bg-workspace px-3 py-2.5 text-muted-foreground" /></label><label className="grid grid-cols-[132px_minmax(0,1fr)]"><span className="bg-active px-3 py-2.5 font-medium">Strict output rule</span><input readOnly value="禁止所有文字、水印、额外人物、场景与裁切" className="min-w-0 bg-workspace px-3 py-2.5 text-muted-foreground" /></label></div>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">补充内容只影响神态、姿势和状态，不会覆盖参考图的服装；实际生成时间通常约 20—45 秒。</p>
+        <div className="mt-5 flex justify-end gap-2"><button onClick={() => setGenerationTarget(null)} disabled={generatingImage} className="rounded-lg border px-4 py-2 text-sm hover:bg-hover disabled:opacity-50">取消</button><button onClick={() => void generateImage()} disabled={generatingImage || !generationDescription.trim() || generationReferences.length < 1} className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground disabled:opacity-50">{generatingImage ? '正在生成…' : '生成并使用'}</button></div>
       </section>
     </div>}
 
     {chatCard && <div className="fixed inset-0 z-[70] grid place-items-center bg-black/45 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setChatCard(null) }}>
       <section role="dialog" aria-modal="true" aria-label={`与 ${chatCard.name} 私聊`} className="grid h-[min(720px,calc(100vh-2rem))] w-full max-w-5xl overflow-hidden rounded-[22px] border border-border bg-workspace shadow-[var(--shadow-floating-strong)] md:grid-cols-[230px_minmax(0,1fr)]">
-        <aside className="flex min-h-0 flex-col border-r p-3"><div className="flex items-center justify-between gap-2"><div><p className="text-xs text-brand">私聊会话</p><p className="text-sm font-medium">{chatCard.name}</p></div><button onClick={() => setChatCard(null)} aria-label="关闭私聊" className="rounded-lg p-2 hover:bg-hover"><X className="size-4" /></button></div><button onClick={() => void createSession()} disabled={busy} className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-sm hover:bg-hover disabled:opacity-50"><Plus className="size-4" />新建会话</button><div className="mt-3 min-h-0 flex-1 space-y-1 overflow-auto">{sessions.map((item) => <button key={item.id} onClick={() => void selectSession(item.id)} className={`w-full rounded-lg px-3 py-2 text-left ${chat?.id === item.id ? 'bg-active' : 'hover:bg-hover'}`}><span className="block truncate text-sm font-medium">{item.title}</span><span className="mt-0.5 block text-xs text-muted-foreground">{item.turn} 轮 · {chatTime(item.updatedAt)}</span></button>)}</div></aside>
-        <main className="flex min-h-0 min-w-0 flex-col p-5"><header className="flex items-center justify-between gap-3"><div><p className="text-xs text-brand">副本专属私聊</p>{chat && editingTitle !== null ? <input autoFocus value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} onBlur={() => void renameSession()} onKeyDown={(event) => { if (event.key === 'Enter') void renameSession(); if (event.key === 'Escape') setEditingTitle(null) }} className="mt-1 w-full rounded border bg-surface px-2 py-1 text-lg font-semibold" /> : <h3 onDoubleClick={() => chat && setEditingTitle(chat.title)} title="双击修改名称" className="mt-1 cursor-text text-lg font-semibold">{chat?.title || '选择或新建一个会话'}</h3>}</div>{chat && <button onClick={() => void deleteSession()} disabled={busy} className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm text-destructive hover:bg-hover disabled:opacity-50"><Trash2 className="size-4" />删除</button>}</header>
+        <aside className="flex min-h-0 flex-col border-r p-3"><div className="flex items-center justify-between gap-2"><div><p className="text-xs text-brand">私聊会话</p><p className="text-sm font-medium">{chatCard.name}</p></div><button onClick={() => setChatCard(null)} aria-label="退出私聊" title="退出私聊" className="rounded-lg p-2 hover:bg-hover"><X className="size-4" /></button></div><button onClick={() => void createSession()} disabled={busy} className="mt-4 inline-flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-sm hover:bg-hover disabled:opacity-50"><Plus className="size-4" />新建会话</button><div className="mt-3 min-h-0 flex-1 space-y-1 overflow-auto">{sessions.map((item) => <div key={item.id} className={`group flex items-center gap-1 rounded-lg ${chat?.id === item.id ? 'bg-active' : 'hover:bg-hover'}`}><button onClick={() => void selectSession(item.id)} className="min-w-0 flex-1 px-3 py-2 text-left"><span className="block truncate text-sm font-medium">{item.title}</span><span className="mt-0.5 block text-xs text-muted-foreground">{item.turn} 轮 · {chatTime(item.updatedAt)}</span></button><button onClick={() => void deleteSession(item)} disabled={busy} aria-label={`删除会话 ${item.title}`} title="删除会话" className="mr-1 rounded p-1.5 text-destructive opacity-0 hover:bg-destructive/10 group-hover:opacity-100 focus:opacity-100 disabled:opacity-40"><X className="size-4" /></button></div>)}</div></aside>
+        <main className="flex min-h-0 min-w-0 flex-col p-5"><header className="flex items-center justify-between gap-3"><div><p className="text-xs text-brand">副本专属私聊</p>{chat && editingTitle !== null ? <input autoFocus value={editingTitle} onChange={(event) => setEditingTitle(event.target.value)} onBlur={() => void renameSession()} onKeyDown={(event) => { if (event.key === 'Enter') void renameSession(); if (event.key === 'Escape') setEditingTitle(null) }} className="mt-1 w-full rounded border bg-surface px-2 py-1 text-lg font-semibold" /> : <h3 onDoubleClick={() => chat && setEditingTitle(chat.title)} title="双击修改名称" className="mt-1 cursor-text text-lg font-semibold">{chat?.title || '选择或新建一个会话'}</h3>}</div><button onClick={() => void openProfile()} disabled={busy} className="rounded-lg px-2 py-1.5 text-sm hover:bg-hover">我的设定</button></header>
           {chat ? <><div ref={messageListRef} className="mt-5 flex-1 space-y-3 overflow-auto">{chat.history.length === 0 ? <p className="rounded-xl bg-active p-4 text-sm text-muted-foreground">向 {chatCard.name} 打个招呼吧。这里的聊天不会推进体验剧情。</p> : chat.history.map((message, index) => <div key={index} className={`whitespace-pre-wrap rounded-xl p-3 text-sm leading-6 ${message.role === 'user' ? 'ml-10 bg-foreground text-primary-foreground' : 'mr-10 bg-active'}`}>{message.role === 'assistant' && !message.content ? (message.status === 'failed' ? <span className="text-destructive">回复失败：{message.error || '请稍后重试。'}</span> : <span className="inline-flex items-center gap-2 text-muted-foreground"><span>{chatCard.name} 正在回复</span><span className="flex gap-1"><i className="size-1.5 animate-bounce rounded-full bg-brand" /><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" /><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" /></span></span>) : <>{message.content}{busy && message.role === 'assistant' && index === chat.history.length - 1 && <span className="ml-2 inline-flex gap-1 align-middle"><i className="size-1.5 animate-bounce rounded-full bg-brand" /><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:150ms]" /><i className="size-1.5 animate-bounce rounded-full bg-brand [animation-delay:300ms]" /></span>}</>}</div>)}</div><div className="mt-4 flex gap-2"><input value={input} disabled={busy} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void send() }} placeholder={`对 ${chatCard.name} 说点什么…`} className="min-w-0 flex-1 rounded-lg border bg-surface px-3 py-2" /><button onClick={() => void send()} disabled={busy || !input.trim()} className="rounded-lg bg-foreground px-4 text-sm text-primary-foreground disabled:opacity-50">{busy ? '生成中…' : '发送'}</button></div></> : <div className="grid flex-1 place-items-center text-center"><div><p className="text-sm text-muted-foreground">选择左侧历史会话继续聊天，或新建一个会话。</p><button onClick={() => void createSession()} disabled={busy} className="mt-3 rounded-lg bg-foreground px-3 py-2 text-sm text-primary-foreground">新建会话</button></div></div>}
         </main>
       </section>
     </div>}
+    {profileDialog && <div className="fixed inset-0 z-[80] grid place-items-center bg-black/45 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setProfileDialog(false) }}><section role="dialog" aria-modal="true" aria-label="我的身份设定" className="w-full max-w-lg rounded-[22px] border bg-workspace p-5 shadow-[var(--shadow-floating-strong)]"><header className="flex items-start justify-between gap-4"><div><p className="text-xs text-brand">应用级设定</p><h3 className="mt-1 text-xl font-semibold">我的身份</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">所有角色私聊都会使用这份设定，角色会据此调整称呼与互动方式；不会影响副本剧情。</p></div><button onClick={() => setProfileDialog(false)} disabled={busy} className="rounded-lg p-2 hover:bg-hover"><X className="size-4" /></button></header><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="text-sm">身份<input value={playerProfile.identity} onChange={(event) => setPlayerProfile((value) => ({ ...value, identity: event.target.value }))} maxLength={160} placeholder="例如：萧家旁支弟子" className="mt-1 w-full rounded-lg border bg-surface px-3 py-2" /></label><label className="text-sm">性别<input value={playerProfile.gender} onChange={(event) => setPlayerProfile((value) => ({ ...value, gender: event.target.value }))} maxLength={40} placeholder="例如：女" className="mt-1 w-full rounded-lg border bg-surface px-3 py-2" /></label><label className="text-sm">年龄<input value={playerProfile.age} onChange={(event) => setPlayerProfile((value) => ({ ...value, age: event.target.value }))} maxLength={40} placeholder="例如：16岁" className="mt-1 w-full rounded-lg border bg-surface px-3 py-2" /></label></div><label className="mt-3 block text-sm">补充说明<textarea value={playerProfile.description} onChange={(event) => setPlayerProfile((value) => ({ ...value, description: event.target.value }))} maxLength={800} rows={4} placeholder="例如：与你自幼相识，擅长炼药，对退婚一事有所顾虑。" className="mt-1 w-full resize-none rounded-lg border bg-surface px-3 py-2" /></label><div className="mt-5 flex justify-end gap-2"><button onClick={() => setProfileDialog(false)} disabled={busy} className="rounded-lg border px-4 py-2 text-sm">取消</button><button onClick={() => void savePlayerProfile()} disabled={busy} className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground">{busy ? '保存中…' : '保存全局设定'}</button></div></section></div>}
   </section>
 }

@@ -1,10 +1,10 @@
 from __future__ import annotations
-import io,json,re,zipfile
+import asyncio,base64,io,json,mimetypes,re,zipfile
 import httpx
 from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
 from models import ExperienceRoleCard,ExperienceScript,LLMConfig,RagSourceChunk,SourceSegment,Work
-from prompts.experience import render_experience_mood_protocol,render_experience_snapshot_extraction_prompt
+from prompts.experience import render_experience_mood_protocol,render_experience_scene_prompt,render_experience_snapshot_extraction_prompt
 from prompts.historical_question import render_historical_question_resolver_prompt
 from prompts.role_chat import render_role_card_chat_prompt,render_role_chat_memory_summary_prompt
 from prompts.scenario_context import render_scenario_initial_context_analysis_prompt
@@ -91,6 +91,69 @@ def _log_llm_request(stage:str,config:LLMConfig,prompt:str,temperature:float,str
 
 def _log_llm_response(stage:str,config:LLMConfig,content:str):
  logger.info("LLM_RESPONSE_BEGIN\nstage: %s\nmodel: %s\ncontent:\n%s\nLLM_RESPONSE_END",stage,config.model,content)
+
+def _image_url_from_response(data:dict)->str:
+ output=data.get("output") or data
+ for choice in output.get("choices") or []:
+  for part in choice.get("message",{}).get("content") or []:
+   if part.get("type")=="image" and part.get("image"):return str(part["image"])
+ raise RuntimeError("图片模型成功但未返回图片地址")
+
+async def generate_role_image(config:LLMConfig,prompt:str,references:list[tuple[str,bytes]])->tuple[bytes,str]:
+ """调用已配置的角色图片模型；调用者负责写入角色资源目录。"""
+ if not config or not config.role_image_base_url or not config.role_image_model or not config.role_image_api_key:
+  raise RuntimeError("请先在设置中完成角色图片生成模型配置")
+ if not 1<=len(references)<=3:raise RuntimeError("角色图片生成需要 1—3 张参考图")
+ content=[{"text":prompt}]
+ for mime_type,raw in references:
+  content.append({"image":f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"})
+ parameters={"watermark":False,"n":1,"size":"960*1280"}
+ if config.role_image_model.startswith("wan2.6-"):
+  parameters.update({"negative_prompt":"文字，水印，签名，标签，背景，场景，额外人物，裁切，残缺肢体，低清晰度","prompt_extend":True,"enable_interleave":False})
+ headers={"Authorization":f"Bearer {config.role_image_api_key}","X-DashScope-Async":"enable"}
+ base_url=config.role_image_base_url.rstrip("/")
+ logger.info("LLM_REQUEST_BEGIN\nstage: role_image_generation\nmodel: %s\nbase_url: %s\nresponse_format: image\nreference_images: %s\nprompt:\n%s\nLLM_REQUEST_END",config.role_image_model,base_url,len(references),prompt)
+ async with httpx.AsyncClient(timeout=httpx.Timeout(90),trust_env=False,follow_redirects=True) as client:
+  response=await client.post(base_url,headers=headers,json={"model":config.role_image_model,"input":{"messages":[{"role":"user","content":content}]},"parameters":parameters})
+  response.raise_for_status();submitted=response.json();task_id=(submitted.get("output") or {}).get("task_id") or submitted.get("task_id")
+  if not task_id:
+   image_url=_image_url_from_response(submitted)
+  else:
+   task_base=base_url.rsplit("/services/",1)[0] if "/services/" in base_url else base_url
+   image_url=""
+   for _ in range(90):
+    await asyncio.sleep(2)
+    status=await client.get(f"{task_base}/tasks/{task_id}",headers={"Authorization":f"Bearer {config.role_image_api_key}"})
+    status.raise_for_status();data=status.json();output=data.get("output") or data;state=output.get("task_status") or data.get("status")
+    if state=="SUCCEEDED":
+     image_url=_image_url_from_response(data);break
+    if state in {"FAILED","CANCELED"}:raise RuntimeError(f"角色图片生成失败：{output.get('message') or data.get('message') or '未知错误'}")
+   if not image_url:raise TimeoutError("角色图片生成超过 180 秒仍未完成")
+  image=await client.get(image_url);image.raise_for_status()
+  return image.content,image.headers.get("content-type","image/png").split(";",1)[0]
+
+async def generate_scene_image(config:LLMConfig,prompt:str,references:list[tuple[str,bytes]])->tuple[bytes,str]:
+ """按当前剧情与角色参考图生成一张画面；始终由用户操作触发。"""
+ if not config or not config.scene_image_base_url or not config.scene_image_model or not config.scene_image_api_key:
+  raise RuntimeError("请先在设置中完成剧情图片生成模型配置")
+ if not 1<=len(references)<=3:raise RuntimeError("请先为参与场景的角色准备 1—3 张默认形象图")
+ content=[{"text":prompt},*[{"image":f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"} for mime,raw in references]]
+ parameters={"watermark":False,"n":1,"size":"1280*960"}
+ if config.scene_image_model.startswith("wan2.6-"):
+  parameters.update({"negative_prompt":"文字，水印，签名，标签，对话框，额外人物，低清晰度","prompt_extend":True,"enable_interleave":False})
+ headers={"Authorization":f"Bearer {config.scene_image_api_key}","X-DashScope-Async":"enable"};base_url=config.scene_image_base_url.rstrip("/")
+ logger.info("LLM_REQUEST_BEGIN\nstage: scene_image_generation\nmodel: %s\nbase_url: %s\nresponse_format: image\nreference_images: %s\nprompt:\n%s\nLLM_REQUEST_END",config.scene_image_model,base_url,len(references),prompt)
+ async with httpx.AsyncClient(timeout=httpx.Timeout(90),trust_env=False,follow_redirects=True) as client:
+  response=await client.post(base_url,headers=headers,json={"model":config.scene_image_model,"input":{"messages":[{"role":"user","content":content}]},"parameters":parameters});response.raise_for_status();submitted=response.json();task_id=(submitted.get("output") or {}).get("task_id") or submitted.get("task_id")
+  if task_id:
+   task_base=base_url.rsplit("/services/",1)[0] if "/services/" in base_url else base_url;image_url=""
+   for _ in range(90):
+    await asyncio.sleep(2);status=await client.get(f"{task_base}/tasks/{task_id}",headers={"Authorization":f"Bearer {config.scene_image_api_key}"});status.raise_for_status();data=status.json();output=data.get("output") or data;state=output.get("task_status") or data.get("status")
+    if state=="SUCCEEDED":image_url=_image_url_from_response(data);break
+    if state in {"FAILED","CANCELED"}:raise RuntimeError(f"剧情图片生成失败：{output.get('message') or data.get('message') or '未知错误'}")
+   if not image_url:raise TimeoutError("剧情图片生成超过 180 秒仍未完成")
+  else:image_url=_image_url_from_response(submitted)
+  image=await client.get(image_url);image.raise_for_status();return image.content,image.headers.get("content-type","image/png").split(";",1)[0]
 
 async def _narration_completion(config:LLMConfig,prompt:str,temperature:float,stage:str):
  client=_llm_client(config)
@@ -261,15 +324,28 @@ async def extract_character_names(db:Session,segments:list[SourceSegment]):
   for value in re.findall(pattern,text):
    if value not in {"这个","那里","他们","我们","自己","已经","不会","什么","一个","不是"} and value not in names:names.append(value)
  return names[:20]
-async def narrate(db:Session,script:ExperienceScript,history:list[dict],message:str|None=None,player_identity:str=""):
+async def _experience_scene_prompt(db:Session,script:ExperienceScript,history:list[dict],message:str,identity:str,mood_states:list[dict]):
+ snap=script.snapshot or {}
+ role_card=next((row for row in snap.get("roleCards",[]) if isinstance(row,dict) and row.get("name")==identity),{})
+ context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
+ recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
+ knowledge=await retrieve_prior_knowledge(db,script,message or f"{identity} 副本开始前的经历、关系与处境",identity)
+ first_excerpt=str(knowledge[0]["content"] if knowledge else "")[:1000]
+ return render_experience_scene_prompt(
+  role_name=identity,
+  role_card_json=json.dumps(role_card,ensure_ascii=False,separators=(",",":")),
+  scenario_context_json=json.dumps(context,ensure_ascii=False,separators=(",",":"))[:18000],
+  historical_questions_json=json.dumps(context["historicalQuestions"],ensure_ascii=False,separators=(",",":")),
+  ongoing_context_text=f"副本关联原文依据（仅作事实依据，不得提前叙述未发生情节）：\n{_retrieved_knowledge_lines(knowledge)}\n\n会话：\n{recent or '（尚未开始）'}",
+  role_instruction=f"玩家本轮输入：{message or '生成副本开场'}",
+  first_appearance_excerpt=first_excerpt,
+ )+render_experience_mood_protocol(mood_states)
+
+async def narrate(db:Session,script:ExperienceScript,history:list[dict],message:str|None=None,player_identity:str="",mood_states:list[dict]|None=None):
  snap=script.snapshot or {};config=db.get(LLMConfig,1);identity=player_identity or snap.get("playerIdentity", "你")
  if snap.get("mode")=="experience_snapshot":
-  role_card=next((row for row in snap.get("roleCards",[]) if isinstance(row,dict) and row.get("name")==identity),{})
-  context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
   _require_narration_config(config)
-  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
-  knowledge=await retrieve_prior_knowledge(db,script,message or f"{identity} 副本开始前的经历、关系与处境",identity)
-  prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n副本关联原文依据（覆盖副本选中章节及此前内容；可补充事实，但不要将未在当前会话发生的情节提前叙述为已发生）：\n{_retrieved_knowledge_lines(knowledge)}\n会话：{recent}\n玩家行动：{message or '生成副本开场'}\n输出中文沉浸式叙事，并在可行动节点停下。"
+  prompt=await _experience_scene_prompt(db,script,history,message or "",identity,mood_states or [])
   return await _narration_completion(config,prompt,.35,"experience_narration")
  _require_narration_config(config)
  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-12:]);ctx=str(snap.get("sourceText") or snap.get("openingScene") or snap.get("world") or "")[:18000]
@@ -278,12 +354,8 @@ async def narrate(db:Session,script:ExperienceScript,history:list[dict],message:
 async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],message:str,player_identity:str="",mood_states:list[dict]|None=None):
  snap=script.snapshot or {};config=db.get(LLMConfig,1);identity=player_identity or snap.get("playerIdentity", "你")
  if snap.get("mode")=="experience_snapshot":
-  role_card=next((row for row in snap.get("roleCards",[]) if isinstance(row,dict) and row.get("name")==identity),{})
-  context={"scenario":(snap.get("scenarioAnalysis") or {}).get("scenario",{}),"confirmedPreload":snap.get("confirmedPreload",[]),"events":snap.get("events",[]),"relations":snap.get("relations",[]),"conflicts":snap.get("conflicts",[]),"historicalQuestions":snap.get("historicalQuestions",[]),"roleCard":role_card}
   _require_narration_config(config)
-  recent="\n".join(f"{'玩家' if x.get('role')=='user' else '叙事者'}：{x.get('content','')}" for x in history[-10:])
-  knowledge=await retrieve_prior_knowledge(db,script,message,identity)
-  prompt=f"你是局部小说副本的剧情主持人。玩家替换角色：{identity}。只依据以下副本结构化事实推进，不能使用副本外知识或把后续事件提前给角色；不替玩家说话、行动或决定。当前会话实际发生的事优先于原事件轨迹。\n副本事实：{json.dumps(context,ensure_ascii=False)[:18000]}\n副本关联原文依据（覆盖副本选中章节及此前内容；可补充事实，但不要将未在当前会话发生的情节提前叙述为已发生）：\n{_retrieved_knowledge_lines(knowledge)}\n会话：{recent}\n玩家行动：{message}\n输出中文沉浸式叙事，并在可行动节点停下。{render_experience_mood_protocol(mood_states or [])}"
+  prompt=await _experience_scene_prompt(db,script,history,message,identity,mood_states or [])
   async for chunk in _narration_stream(config,prompt,.35,"experience_narration_stream"):yield chunk,config.model
   return
  _require_narration_config(config)
@@ -316,9 +388,11 @@ async def _role_chat_prompt(db:Session,script:ExperienceScript,card:ExperienceRo
  snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
  mood_states=configured_emotion_states(card)
  profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
+ player=db.get(models.UserProfile,1)
+ player_profile={"identity":player.identity,"gender":player.gender,"age":player.age,"description":player.description} if player else {}
  recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[max(summary_cursor,0):][-ROLE_CHAT_CONTEXT_TURNS*2:])
  knowledge=await retrieve_prior_knowledge(db,script,message,card.name)
- return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,mood_states_json=json.dumps(mood_states,ensure_ascii=False),dialogue_examples_json=json.dumps(_select_dialogue_examples(card.dialogue_examples or []),ensure_ascii=False),retrieved_knowledge_lines=_retrieved_knowledge_lines(knowledge))
+ return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),player_profile_json=json.dumps(player_profile or {},ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,mood_states_json=json.dumps(mood_states,ensure_ascii=False),dialogue_examples_json=json.dumps(_select_dialogue_examples(card.dialogue_examples or []),ensure_ascii=False),retrieved_knowledge_lines=_retrieved_knowledge_lines(knowledge))
 
 def _completed_role_chat_turns(history:list[dict],cursor:int=0):
  """从未压缩历史中按时间顺序识别成功的“用户消息 + 角色回复”回合。"""

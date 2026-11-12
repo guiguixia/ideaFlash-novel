@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, QrCode, Settings } from "lucide-react";
+import { ArrowLeft, Bot, QrCode, Settings } from "lucide-react";
 import {
   kernelGet,
   kernelPatch,
@@ -58,6 +58,9 @@ type RoleCard = {
 type SessionHistoryItem = {
   role: "user" | "assistant";
   content: string;
+  blocks?: { type: "narration" | "dialogue"; speaker?: string; content: string }[];
+  sceneImageUrl?: string;
+  sceneImageCreatedAt?: string;
   status?: "generating" | "failed";
   error?: string;
   model?: string;
@@ -69,7 +72,8 @@ type Session = {
   scriptId: string;
   title: string;
   turn: number;
-  state?: { playerIdentity?: string };
+  updatedAt?: string | null;
+  state?: { playerIdentity?: string; sceneImageArchive?: { url: string; turn: number; content: string; createdAt: string }[] };
   history?: SessionHistoryItem[];
 };
 type Work = {
@@ -436,10 +440,18 @@ function Experience({
     [player, setPlayer] = useState(""),
     [roleCards, setRoleCards] = useState<RoleCard[]>([]),
     [activeMood, setActiveMood] = useState("default"),
+    [viewMode, setViewMode] = useState<"classic" | "immersive">("classic"),
+    [generatingScene, setGeneratingScene] = useState(false),
     [editingSessionId, setEditingSessionId] = useState(""),
     [editingTitle, setEditingTitle] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
   const script = work.scripts?.find((item) => item.id === scriptId);
+  const latestSession = work.sessions?.find(
+    (item) =>
+      item.scriptId === scriptId &&
+      (item.state?.playerIdentity || script?.playerIdentity) === player,
+  );
+  const latestSessionKey = latestSession ? `${latestSession.id}:${latestSession.updatedAt || latestSession.turn}` : "";
   useEffect(() => {
     setSession(null);
     setRoleCards([]);
@@ -456,17 +468,11 @@ function Experience({
         .catch((err) => setError(message(err)));
   }, [scriptId, script?.status, work.id, work.workType]);
   useEffect(() => {
-    if (!player) return;
-    const latest = work.sessions?.find(
-      (item) =>
-        item.scriptId === scriptId &&
-        (item.state?.playerIdentity || script?.playerIdentity) === player,
-    );
-    if (latest)
-      void kernelGet<Session>(`/api/works/${work.id}/sessions/${latest.id}`)
+    if (!player || !latestSession) return;
+    void kernelGet<Session>(`/api/works/${work.id}/sessions/${latestSession.id}`)
         .then(setSession)
         .catch((err) => setError(message(err)));
-  }, [scriptId, player, work.id]);
+  }, [latestSessionKey, player, work.id]);
   useEffect(() => setActiveMood("default"), [player]);
   const isGenerating = !!session?.history?.some(
     (item) => item.role === "assistant" && item.status === "generating",
@@ -544,6 +550,14 @@ function Experience({
     } finally {
       setStarting(null);
     }
+  }
+  async function generateSceneImage() {
+    if (!session || generatingScene || isGenerating) return;
+    setGeneratingScene(true);setError("");
+    try {
+      setSession(await kernelPost<Session>(`/api/works/${work.id}/sessions/${session.id}/scene-image`, {}));
+    } catch (err) { setError(message(err)); }
+    finally { setGeneratingScene(false); }
   }
   function beginRename(item: Session) {
     setEditingSessionId(item.id);
@@ -678,6 +692,12 @@ function Experience({
     "";
   const moodLabel = activeEmotion?.name || "";
   const moodDescription = activeEmotion?.description || "";
+  const storyBlocks = (item: SessionHistoryItem) =>
+    item.blocks?.length
+      ? item.blocks
+      : item.content
+        ? [{ type: "narration" as const, content: item.content }]
+        : [];
   return (
     <section className="grid h-[calc(100vh-9rem)] min-h-[560px] max-h-[760px] grid-cols-[220px_minmax(0,1fr)_260px] overflow-hidden rounded-[18px] border border-border bg-workspace">
       <aside className="min-h-0 overflow-y-auto border-r p-4">
@@ -764,29 +784,57 @@ function Experience({
               {script.title}
             </h2>
           </div>
-          <label className="shrink-0 text-xs text-muted-foreground">
-            当前副本
-            <select
-              value={script.id}
-              disabled={busy || !!starting || isGenerating}
-              onChange={(event) => onScriptChange(event.target.value)}
-              className="mt-1 block max-w-56 rounded-lg border bg-surface px-2.5 py-1.5 text-sm text-foreground disabled:opacity-50"
-            >
-              {work.scripts?.map((item) => (
-                <option
-                  key={item.id}
-                  value={item.id}
-                  disabled={item.status !== "ready"}
-                >
-                  {item.title}
-                  {work.workType !== "original_story"
-                    ? ` · 第 ${item.sourceStart}—${item.sourceEnd} 段`
-                    : ""}
-                  {item.status !== "ready" ? " · 构建中" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="flex shrink-0 items-end gap-3">
+            <div className="rounded-lg border bg-surface p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setViewMode("classic")}
+                className={`rounded-md px-2.5 py-1.5 ${viewMode === "classic" ? "bg-foreground text-primary-foreground" : "text-muted-foreground hover:bg-hover"}`}
+              >
+                对话记录
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("immersive")}
+                className={`rounded-md px-2.5 py-1.5 ${viewMode === "immersive" ? "bg-foreground text-primary-foreground" : "text-muted-foreground hover:bg-hover"}`}
+              >
+                沉浸演出
+              </button>
+            </div>
+            {viewMode === "immersive" && (
+              <button
+                type="button"
+                onClick={() => void generateSceneImage()}
+                disabled={generatingScene || isGenerating || !session}
+                className="rounded-lg border border-brand-border bg-brand-soft px-3 py-1.5 text-xs font-medium text-brand hover:bg-brand-soft/70 disabled:opacity-50"
+              >
+                {generatingScene ? "画面生成中…" : "生成本段画面"}
+              </button>
+            )}
+            <label className="text-xs text-muted-foreground">
+              当前副本
+              <select
+                value={script.id}
+                disabled={busy || !!starting || isGenerating}
+                onChange={(event) => onScriptChange(event.target.value)}
+                className="mt-1 block max-w-56 rounded-lg border bg-surface px-2.5 py-1.5 text-sm text-foreground disabled:opacity-50"
+              >
+                {work.scripts?.map((item) => (
+                  <option
+                    key={item.id}
+                    value={item.id}
+                    disabled={item.status !== "ready"}
+                  >
+                    {item.title}
+                    {work.workType !== "original_story"
+                      ? ` · 第 ${item.sourceStart}—${item.sourceEnd} 段`
+                      : ""}
+                    {item.status !== "ready" ? " · 构建中" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </header>
         {session ? (
           <>
@@ -794,11 +842,15 @@ function Experience({
               ref={messageListRef}
               className="mt-6 min-h-0 flex-1 space-y-3 overflow-y-auto"
             >
+              {viewMode === "immersive" && (
+                <div className="overflow-hidden rounded-2xl border border-brand-border bg-active">
+                  <div className="border-b bg-workspace px-3 py-2 text-xs text-muted-foreground">为最近一段剧情生成并永久归档画面</div>
+                  {!!session.state?.sceneImageArchive?.length && <div className="border-t bg-workspace px-3 py-2"><p className="text-xs text-muted-foreground">已归档 {session.state.sceneImageArchive.length} 张剧情画面</p><div className="mt-2 flex gap-2 overflow-x-auto pb-1">{session.state.sceneImageArchive.map((asset) => <a key={asset.url} href={kernelUrl(asset.url)} target="_blank" rel="noreferrer" title={asset.content} className="shrink-0"><img src={kernelUrl(asset.url)} alt="已归档剧情画面" className="size-12 rounded border object-cover" /></a>)}</div></div>}
+                </div>
+              )}
               {session.history?.map((item, index) => (
                 <div key={index}>
-                  <div
-                    className={`whitespace-pre-wrap rounded-xl p-4 text-sm leading-7 ${item.role === "user" ? "ml-10 bg-foreground text-primary-foreground" : "bg-active"}`}
-                  >
+                  <div className={viewMode === "immersive" && item.role === "assistant" ? "overflow-hidden rounded-2xl border border-brand-border bg-gradient-to-br from-brand-soft via-workspace to-active p-5" : `whitespace-pre-wrap rounded-xl p-4 text-sm leading-7 ${item.role === "user" ? "ml-10 bg-foreground text-primary-foreground" : "bg-active"}`}>
                     {item.role === "assistant" && !item.content ? (
                       item.status === "failed" ? (
                         <span className="text-destructive">
@@ -816,7 +868,23 @@ function Experience({
                       )
                     ) : (
                       <>
-                        {item.content}
+                        {viewMode === "immersive" && item.role === "assistant" ? (
+                          <div className="space-y-4">
+                            {storyBlocks(item).map((block, blockIndex) =>
+                              block.type === "dialogue" ? (
+                                <div key={blockIndex} className="rounded-xl border border-brand-border/70 bg-surface/80 px-4 py-3 shadow-sm">
+                                  <p className="text-xs font-semibold tracking-[0.16em] text-brand">{block.speaker || "角色"}</p>
+                                  <p className="mt-1 whitespace-pre-wrap text-sm leading-7 text-foreground">{block.content}</p>
+                                </div>
+                              ) : (
+                                <p key={blockIndex} className="whitespace-pre-wrap border-l-2 border-brand/60 pl-3 text-sm leading-7 text-muted-foreground">{block.content}</p>
+                              ),
+                            )}
+                            {item.sceneImageUrl && <img src={kernelUrl(item.sceneImageUrl)} alt="本段剧情画面" className="max-h-80 w-full rounded-xl border bg-active object-contain" />}
+                          </div>
+                        ) : (
+                          item.content
+                        )}
                         {busy &&
                           item.role === "assistant" &&
                           index === (session.history?.length || 0) - 1 && (
@@ -1004,6 +1072,11 @@ export function RuntimeWorkbench() {
     const timer = window.setInterval(() => void reload(), 1500);
     return () => window.clearInterval(timer);
   }, [buildingKey, id]);
+  useEffect(() => {
+    if (section !== "experience") return;
+    const timer = window.setInterval(() => void reload(), 2500);
+    return () => window.clearInterval(timer);
+  }, [section, id]);
   if (!work)
     return (
       <main className="p-8 text-sm text-muted-foreground">
@@ -1209,6 +1282,14 @@ export function RuntimeWorkbench() {
           >
             <QrCode className="size-4" />
           </button>
+          <Link
+            to="/wechat"
+            title="微信接入"
+            aria-label="微信接入"
+            className="rounded-lg p-2 hover:bg-hover"
+          >
+            <Bot className="size-4" />
+          </Link>
           <Link
             to="/settings"
             title="设置"
