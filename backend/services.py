@@ -3,7 +3,7 @@ import asyncio,base64,io,json,mimetypes,re,zipfile
 import httpx
 from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
-from models import ExperienceRoleCard,ExperienceScript,LLMConfig,RagSourceChunk,SourceSegment,Work
+from models import ExperienceRoleCard,ExperienceScript,LLMConfig,RagSourceChunk,SourceSegment,UserProfile,Work
 from prompts.experience import render_experience_mood_protocol,render_experience_scene_prompt,render_experience_snapshot_extraction_prompt
 from prompts.historical_question import render_historical_question_resolver_prompt
 from prompts.role_chat import render_role_card_chat_prompt,render_role_chat_memory_summary_prompt
@@ -51,6 +51,20 @@ async def retrieve_prior_knowledge(db:Session,script:ExperienceScript,message:st
   semantic=_cosine(query,row.embedding or []);keyword=sum(1 for word in keywords if len(word)>=2 and word in row.content)
   score=semantic+min(keyword,4)*.08+(0.04 if role_name and role_name in row.content else 0)
   ranked.append((score,row))
+ ranked.sort(key=lambda item:item[0],reverse=True)
+ return [{"chapter":row.source_segment_order,"title":row.source_title,"content":row.content,"score":round(score,4)} for score,row in ranked[:limit]]
+async def retrieve_work_role_knowledge(db:Session,work:Work,memory_chapter:int,message:str,role_name:str,limit:int=5):
+ """作品级角色只记得其记忆点章节及此前的原文。"""
+ if not memory_chapter:return []
+ rows=db.query(RagSourceChunk).filter(RagSourceChunk.work_id==work.id,RagSourceChunk.source_segment_order<=memory_chapter).all()
+ if not rows:return []
+ config=db.get(LLMConfig,1)
+ try:query=(await _embed(config,[message]))[0]
+ except Exception:return []
+ keywords=_query_keywords(message,role_name);ranked=[]
+ for row in rows:
+  semantic=_cosine(query,row.embedding or []);keyword=sum(1 for word in keywords if len(word)>=2 and word in row.content)
+  ranked.append((semantic+min(keyword,4)*.08+(0.04 if role_name in row.content else 0),row))
  ranked.sort(key=lambda item:item[0],reverse=True)
  return [{"chapter":row.source_segment_order,"title":row.source_title,"content":row.content,"score":round(score,4)} for score,row in ranked[:limit]]
 def _retrieved_knowledge_lines(items:list[dict]):
@@ -232,7 +246,7 @@ def _merge_named(rows:list[dict],key:str):
     name=str(item["name"]);current=merged.setdefault(name,{**item,"sourceSegmentOrders":[]});current["sourceSegmentOrders"].append(row.get("sourceSegmentOrder"))
  return list(merged.values())
 def _role_dialogue_examples(snapshot:dict,name:str,limit:int=8):
- """按来源片段汇总角色原文短对白，供私聊时再挑选少量口吻参考。"""
+ """按来源片段汇总角色原文短对白，供角色对话时挑选少量口吻参考。"""
  examples=[];seen=set()
  for chapter in snapshot.get("chapterExtractions") or []:
   order=chapter.get("sourceSegmentOrder")
@@ -366,10 +380,18 @@ async def narrate_stream(db:Session,script:ExperienceScript,history:list[dict],m
 ROLE_CHAT_CONTEXT_TURNS=15
 ROLE_CHAT_SUMMARY_TURNS=10
 
-async def role_chat_reply_stream(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
+async def work_role_chat_reply_stream(db:Session,work:Work,card,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0,user_setting:str=""):
  config=db.get(LLMConfig,1);_require_narration_config(config)
- prompt=await _role_chat_prompt(db,script,card,history,message,memory_summary,summary_cursor)
- async for chunk in _narration_stream(config,prompt,.75,"role_card_chat_stream"):yield chunk,config.model
+ player=db.get(UserProfile,1)
+ profile={"name":card.name,"aliases":card.aliases or [],"identity":card.identity,"personality":card.personality,"speechStyle":card.speech_style,"appearance":card.appearance,"background":card.background,"memoryChapter":card.memory_chapter}
+ player_profile={"identity":player.identity,"gender":player.gender,"age":player.age,"description":player.description,"chatSetting":user_setting} if player else {"chatSetting":user_setting}
+ recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[max(summary_cursor,0):][-ROLE_CHAT_CONTEXT_TURNS*2:])
+ rag_query=f"角色：{card.name}\n上下文：\n{recent or '（无）'}\n本轮问题：{message}"
+ logger.info("ROLE_CHAT_RAG_REQUEST_BEGIN\nwork_id: %s\nrole: %s\nmemory_chapter: %s\nquery:\n%s\nROLE_CHAT_RAG_REQUEST_END",work.id,card.name,card.memory_chapter,rag_query)
+ knowledge=await retrieve_work_role_knowledge(db,work,card.memory_chapter,rag_query,card.name)
+ logger.info("ROLE_CHAT_RAG_RESPONSE_BEGIN\nwork_id: %s\nrole: %s\nhits:\n%s\nROLE_CHAT_RAG_RESPONSE_END",work.id,card.name,json.dumps(knowledge,ensure_ascii=False,indent=2))
+ prompt=render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),player_profile_json=json.dumps(player_profile,ensure_ascii=False),world_json=json.dumps(work.settings or {},ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,mood_states_json="[]",dialogue_examples_json="[]",retrieved_knowledge_lines=_retrieved_knowledge_lines(knowledge))
+ async for chunk in _narration_stream(config,prompt,.75,"work_role_chat_stream"):yield chunk,config.model
 
 def _select_dialogue_examples(examples:list,limit:int=5):
  """优先覆盖不同来源片段，避免同一场景的对白占满 Prompt。"""
@@ -382,17 +404,6 @@ def _select_dialogue_examples(examples:list,limit:int=5):
   if isinstance(row,dict) and row.get("text") and row not in selected:selected.append(row)
   if len(selected)>=limit:break
  return selected
-
-async def _role_chat_prompt(db:Session,script:ExperienceScript,card:ExperienceRoleCard,history:list[dict],message:str,memory_summary:str="",summary_cursor:int=0):
- """整理私聊上下文；具体规则纳管在 prompts.role_chat，两个私聊入口共用。"""
- snap=script.snapshot or {};world=(snap.get("scenarioAnalysis") or {}).get("scenario",{}) if snap.get("mode")=="experience_snapshot" else {"world":(snap.get("world") or ""),"openingScene":snap.get("openingScene") or ""}
- mood_states=configured_emotion_states(card)
- profile={"name":card.name,"identity":card.identity,"personality":card.personality,"appearance":card.appearance,"background":card.background,"currentState":card.current_state,"attributes":card.attributes or {}}
- player=db.get(models.UserProfile,1)
- player_profile={"identity":player.identity,"gender":player.gender,"age":player.age,"description":player.description} if player else {}
- recent="\n".join(f"{'用户' if row.get('role')=='user' else card.name}：{row.get('content','')}" for row in history[max(summary_cursor,0):][-ROLE_CHAT_CONTEXT_TURNS*2:])
- knowledge=await retrieve_prior_knowledge(db,script,message,card.name)
- return render_role_card_chat_prompt(role_name=card.name,profile_json=json.dumps(profile,ensure_ascii=False),player_profile_json=json.dumps(player_profile or {},ensure_ascii=False),world_json=json.dumps(world,ensure_ascii=False)[:6000],recent_messages=recent,memory_summary=memory_summary,message=message,mood_states_json=json.dumps(mood_states,ensure_ascii=False),dialogue_examples_json=json.dumps(_select_dialogue_examples(card.dialogue_examples or []),ensure_ascii=False),retrieved_knowledge_lines=_retrieved_knowledge_lines(knowledge))
 
 def _completed_role_chat_turns(history:list[dict],cursor:int=0):
  """从未压缩历史中按时间顺序识别成功的“用户消息 + 角色回复”回合。"""
@@ -407,7 +418,7 @@ def _format_role_chat_turns(turns:list[tuple[dict,dict,int]],role_name:str):
  """摘要输入保持时间升序，并保留说话者，避免摘要器混淆事实来源。"""
  return "\n\n".join(f"用户：{user.get('content','')}\n{role_name}：{assistant.get('content','')}" for user,assistant,_ in turns)
 
-async def compact_role_chat_memory(db:Session,chat,card:ExperienceRoleCard):
+async def compact_role_chat_memory(db:Session,chat,card):
  """每满 15 个未压缩成功回合，压缩最早 10 回合，完整 history 仍保留给界面展示。"""
  while True:
   turns=_completed_role_chat_turns(chat.history or [],chat.summary_cursor or 0)

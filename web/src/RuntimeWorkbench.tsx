@@ -9,7 +9,8 @@ import {
   kernelUrl,
 } from "./lib/kernel-api";
 import { SourceMaterialPanel } from "./SourceMaterialPanel";
-import { RoleCards } from "./RoleCards";
+import { ScriptRoleResources } from "./ScriptRoleResources";
+import { WorkRoles } from "./WorkRoles";
 import {
   RagIndexBuildDialog,
   type RagIndexPreview,
@@ -182,7 +183,7 @@ function StorySetup({
   async function save(event: FormEvent) {
     event.preventDefault();
     await kernelPatch(`/api/works/${work.id}`, form);
-    setNotice("已保存；新建体验副本会使用这份设定。");
+    setNotice("已保存；新建剧情会使用这份设定。");
     await reload();
   }
   const field = (
@@ -303,13 +304,13 @@ function ScriptPanel({
   }
   return (
     <section className="rounded-[18px] border border-border bg-workspace p-6">
-      <p className="text-xs text-brand">体验副本</p>
+      <p className="text-xs text-brand">剧情生成</p>
       <h2 className="mt-1 text-xl font-semibold">
-        {imported ? "从资料中选择进入范围" : "创建一个体验版本"}
+        {imported ? "从资料中选择剧情范围" : "创建一段剧情"}
       </h2>
       <p className="mt-2 text-sm text-muted-foreground">
         推荐生成连续 5
-        章的体验副本：既保留完整的场景推进，也不会让上下文过长。人物会在副本生成后自动抽取。
+        章的剧情：既保留完整的场景推进，也不会让上下文过长。人物会在剧情生成后自动抽取。
       </p>
       <div className="mt-5 grid gap-3 md:grid-cols-3">
         <label className="text-sm">
@@ -395,7 +396,7 @@ function ScriptPanel({
         onClick={() => void create()}
         className="mt-4 rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground"
       >
-        生成体验副本
+        生成剧情
       </button>
       {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
       <div className="mt-6 grid gap-3 md:grid-cols-2">
@@ -646,31 +647,31 @@ function Experience({
   if (!script)
     return (
       <p className="text-sm text-muted-foreground">
-        先在“体验副本”中创建或选择一个版本。
+        先在“剧情生成”中创建或选择一段剧情。
       </p>
     );
   if (script.status !== "ready") {
     const stages: Record<string, string> = {
       queued: "等待构建",
       chapter_extraction: "正在抽取章节结构",
-      scenario_analysis: "正在分析副本开场",
+      scenario_analysis: "正在分析剧情开场",
       historical_backtracking: "正在回溯开场所需历史",
       failed: "构建失败",
     };
     return (
       <section className="rounded-[18px] border border-border bg-workspace p-6">
         <p className="text-xs text-brand">
-          {stages[script.build?.stage || ""] || "正在构建体验副本"}
+          {stages[script.build?.stage || ""] || "正在构建剧情"}
         </p>
         <h2 className="mt-1 text-xl font-semibold">
           正在整理角色、事件与开场上下文
         </h2>
         <p className="mt-3 text-sm text-muted-foreground">
           {script.build?.stage === "failed"
-            ? script.build.error || "副本构建失败，请重新生成。"
+            ? script.build.error || "剧情构建失败，请重新生成。"
             : script.build?.stage === "chapter_extraction"
               ? `已完成 ${script.build?.processed || 0} / ${script.build?.total || 0} 个片段的结构化抽取。`
-              : "章节结构已完成，正在生成可进入的副本上下文。"}
+              : "章节结构已完成，正在生成可进入的剧情上下文。"}
         </p>
       </section>
     );
@@ -780,9 +781,21 @@ function Experience({
         <header className="flex items-end justify-between gap-4">
           <div className="min-w-0">
             <p className="text-xs text-brand">正在体验</p>
-            <h2 className="mt-1 truncate text-xl font-semibold">
-              {script.title}
-            </h2>
+            <select
+              value={script.id}
+              disabled={busy || !!starting || isGenerating}
+              onChange={(event) => onScriptChange(event.target.value)}
+              aria-label="正在体验的剧情"
+              className="mt-1 max-w-full rounded-lg border border-brand-border bg-brand-soft px-3 py-1.5 text-xl font-semibold text-foreground disabled:opacity-50"
+            >
+              {work.scripts?.map((item) => (
+                <option key={item.id} value={item.id} disabled={item.status !== "ready"}>
+                  {item.title}
+                  {work.workType !== "original_story" ? ` · 第 ${item.sourceStart}—${item.sourceEnd} 段` : ""}
+                  {item.status !== "ready" ? " · 构建中" : ""}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex shrink-0 items-end gap-3">
             <div className="rounded-lg border bg-surface p-0.5 text-xs">
@@ -811,29 +824,6 @@ function Experience({
                 {generatingScene ? "画面生成中…" : "生成本段画面"}
               </button>
             )}
-            <label className="text-xs text-muted-foreground">
-              当前副本
-              <select
-                value={script.id}
-                disabled={busy || !!starting || isGenerating}
-                onChange={(event) => onScriptChange(event.target.value)}
-                className="mt-1 block max-w-56 rounded-lg border bg-surface px-2.5 py-1.5 text-sm text-foreground disabled:opacity-50"
-              >
-                {work.scripts?.map((item) => (
-                  <option
-                    key={item.id}
-                    value={item.id}
-                    disabled={item.status !== "ready"}
-                  >
-                    {item.title}
-                    {work.workType !== "original_story"
-                      ? ` · 第 ${item.sourceStart}—${item.sourceEnd} 段`
-                      : ""}
-                    {item.status !== "ready" ? " · 构建中" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
         </header>
         {session ? (
@@ -1006,7 +996,7 @@ function Experience({
           </p>
         )}
         <p className="mt-4 text-xs text-muted-foreground">
-          体验版本 v{script.version}
+          当前剧情 v{script.version}
           <br />
           仅自己可体验
         </p>
@@ -1024,15 +1014,18 @@ export function RuntimeWorkbench() {
       "overview",
       "source",
       "scripts",
-      "experience",
       "characters",
     ].includes(tabParam || "")
       ? tabParam || "overview"
       : "overview",
-    routeScriptId = params.get("script") || "",
-    petChatCardId = params.get("petChatCard") || "";
+    storyTabParam = params.get("storyTab"),
+    routeStoryTab = ["generation", "resources", "experience"].includes(storyTabParam || "")
+      ? storyTabParam || "generation"
+      : "generation",
+    routeScriptId = params.get("script") || "";
   const [work, setWork] = useState<Work | null>(null),
     [section, setSection] = useState(routeSection),
+    [storyTab, setStoryTab] = useState(routeStoryTab),
     [scriptId, setScriptId] = useState(routeScriptId),
     [error, setError] = useState(""),
     [buildingKnowledge, setBuildingKnowledge] = useState(false),
@@ -1049,8 +1042,9 @@ export function RuntimeWorkbench() {
   }, [id]);
   useEffect(() => {
     setSection(routeSection);
+    setStoryTab(routeStoryTab);
     if (routeScriptId) setScriptId(routeScriptId);
-  }, [routeSection, routeScriptId]);
+  }, [routeSection, routeScriptId, routeStoryTab]);
   useEffect(() => {
     if (work?.scripts?.[0] && !scriptId) setScriptId(work.scripts[0].id);
   }, [work?.id, work?.scripts?.[0]?.id]);
@@ -1073,10 +1067,10 @@ export function RuntimeWorkbench() {
     return () => window.clearInterval(timer);
   }, [buildingKey, id]);
   useEffect(() => {
-    if (section !== "experience") return;
+    if (section !== "scripts" || storyTab !== "experience") return;
     const timer = window.setInterval(() => void reload(), 2500);
     return () => window.clearInterval(timer);
-  }, [section, id]);
+  }, [section, storyTab, id]);
   if (!work)
     return (
       <main className="p-8 text-sm text-muted-foreground">
@@ -1101,10 +1095,12 @@ export function RuntimeWorkbench() {
           : work.ragIndex?.status === "failed"
             ? "构建失败"
             : "未构建";
-  function selectSection(next: string, nextScriptId = scriptId) {
+  function selectSection(next: string, nextScriptId = scriptId, nextStoryTab = storyTab) {
     const query = new URLSearchParams({ id, tab: next });
-    if (next === "experience" && nextScriptId)
-      query.set("script", nextScriptId);
+    if (next === "scripts") {
+      query.set("storyTab", nextStoryTab);
+      if (nextScriptId) query.set("script", nextScriptId);
+    }
     navigate(`/workbench?${query.toString()}`);
   }
   async function buildKnowledge() {
@@ -1158,30 +1154,53 @@ export function RuntimeWorkbench() {
         <StorySetup work={work} reload={reload} />
       )
     ) : section === "scripts" ? (
-      <ScriptPanel
-        work={work}
-        reload={reload}
-        onPlay={(value) => {
-          setScriptId(value);
-          selectSection("experience", value);
-        }}
-      />
+      <div className="space-y-5">
+        <nav aria-label="剧情内容" role="tablist" className="flex w-fit rounded-lg border bg-workspace p-1">
+          {[
+            ["generation", "剧情生成"],
+            ["resources", "剧情资源"],
+            ["experience", "剧情体验"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={storyTab === key}
+              onClick={() => selectSection("scripts", scriptId, key)}
+              className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${storyTab === key ? "border-brand-border bg-brand-soft font-semibold text-brand" : "border-transparent hover:bg-hover"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        {storyTab === "generation" ? (
+          <ScriptPanel
+            work={work}
+            reload={reload}
+            onPlay={(value) => {
+              setScriptId(value);
+              selectSection("scripts", value, "experience");
+            }}
+          />
+        ) : storyTab === "resources" ? (
+          <ScriptRoleResources
+            workId={work.id}
+            scriptId={scriptId}
+            scripts={work.scripts || []}
+            imported={imported}
+            onScriptChange={(value) => selectSection("scripts", value, "resources")}
+          />
+        ) : (
+          <Experience
+            work={work}
+            scriptId={scriptId}
+            reload={reload}
+            onScriptChange={(value) => selectSection("scripts", value, "experience")}
+          />
+        )}
+      </div>
     ) : section === "characters" ? (
-      <RoleCards
-        workId={work.id}
-        scriptId={scriptId}
-        autoOpenCardId={petChatCardId}
-      />
-    ) : section === "experience" ? (
-      <Experience
-        work={work}
-        scriptId={scriptId}
-        reload={reload}
-        onScriptChange={(value) => {
-          setScriptId(value);
-          selectSection("experience", value);
-        }}
-      />
+      <WorkRoles workId={work.id} imported={imported} />
     ) : (
       <section className="rounded-[18px] border border-border bg-workspace p-7">
         <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs text-brand">
@@ -1197,7 +1216,7 @@ export function RuntimeWorkbench() {
             <p className="mt-1 font-medium">仅自己可体验</p>
           </div>
           <div className="rounded-xl bg-active p-4">
-            <p className="text-xs text-muted-foreground">体验副本</p>
+            <p className="text-xs text-muted-foreground">剧情</p>
             <p className="mt-1 font-medium">{work.scriptCount} 个</p>
           </div>
           <div className="rounded-xl bg-active p-4">
@@ -1216,7 +1235,7 @@ export function RuntimeWorkbench() {
             onClick={() => selectSection("scripts")}
             className="rounded-lg bg-foreground px-4 py-2 text-sm text-primary-foreground"
           >
-            生成体验副本
+            生成剧情
           </button>
           {imported && (
             <button
@@ -1242,16 +1261,15 @@ export function RuntimeWorkbench() {
         </div>
         {imported && (
           <p className="mt-3 text-xs text-muted-foreground">
-            知识库用于让角色和剧情了解副本开始前的原文历史。
+            知识库用于让角色和剧情了解当前剧情开始前的原文历史。
           </p>
         )}
       </section>
     );
   const navigation = [
     ["overview", "概览"],
-    ["source", imported ? "来源资料" : "故事设定"],
-    ["scripts", "体验副本"],
-    ["experience", "开始体验"],
+    ["source", "来源资料"],
+    ["scripts", "剧情"],
     ["characters", "角色"],
   ];
   return (

@@ -3,9 +3,9 @@
 ## Source of truth
 
 - Status: Active
-- Last refreshed: 2026-10-23
-- Primary product surfaces: 我的作品、作品工作台、体验副本、开始体验、角色卡私聊、作品设置
-- Evidence reviewed: `README.md`、`web/src/App.tsx`、`web/src/styles/globals.css`、现有 `ExperienceSnapshot` / `ExperienceSession` 模型与接口
+- Last refreshed: 2026-11-13
+- Primary product surfaces: 我的作品、作品工作台、剧情生成、剧情资源、剧情体验、作品级角色、作品设置
+- Evidence reviewed: `README.md`、`web/src/RuntimeWorkbench.tsx`、`web/src/ScriptRoleResources.tsx`、`web/src/WorkRoles.tsx`、`web/src/styles/globals.css`
 
 ## Brand
 
@@ -41,7 +41,8 @@
 - Primary navigation: 我的作品；新建原创故事；导入小说；影视灵感；设置。
 - Core routes/screens:
   - 我的作品：按类型展示作品，不展示公共市场或趋势。
-  - 作品工作台：概览、资料/故事设定、体验副本、开始体验、角色与世界、体验记录、设置。
+- 作品工作台一级导航：概览、来源资料、剧情、角色。
+- 剧情页二级导航：剧情生成、剧情资源、剧情体验；页首左侧只有一个“当前剧情”选择器，三者共享该选择。
   - 体验会话：完整场景叙事、会话历史、输入行动、会话控制。
 - Content hierarchy:
   - `Work` 是用户拥有的作品容器。
@@ -75,8 +76,8 @@
   - `ExperienceScriptCard`：范围/场景、玩家身份、视角、版本、最近会话。
   - `CreateExperienceScriptFlow`：按来源变化的副本创建抽屉/向导。
   - `RuntimeContextPanel`：场景、在场角色、会话状态、版本信息。
-  - `RoleChatDialog`：角色卡专属私聊弹窗；左侧为可续聊的会话列表，右侧为消息与输入区。
-- Variants and states: 未构建、构建中、可体验、失败、已归档；当前会话、历史会话、旧版本会话；私聊无会话、当前私聊、改名、删除确认。
+  - `StorySubTabs`：剧情页内的生成、资源、体验切换器，不增加一级导航。
+- Variants and states: 未构建、构建中、可体验、失败、已归档；当前会话、历史会话、旧版本会话；角色唯一会话与重置确认。
 - Token/component ownership: 继续使用 `web/src/styles/globals.css` 中的主题 token，不创建第二套设计系统。
 
 ## Accessibility
@@ -96,7 +97,7 @@
 ## Interaction states
 
 - Loading: 副本构建显示阶段和可离开提示；会话回复显示正在叙事。
-- 角色私聊: 点击角色卡“私聊”只打开弹窗并默认续聊最近会话；仅“新建会话”创建记录。会话使用 UUID 前五位作为默认可见名，双击名称修改；删除前必须确认。
+- 角色对话: 每张作品级角色卡只有一个会话；重置前必须确认，变更记忆章节会自动重置。
 - Empty: 没有副本时以“创建第一个体验副本”引导；原创故事没有体验版本时引导建立开局。
 - Error: 保留来源资料与用户输入，提供重试和错误说明。
 - Success: 副本构建成功后直接提供“进入体验”和“稍后体验”。
@@ -111,7 +112,7 @@
   - 书架 → 我的作品
   - 小说工作台 → 作品工作台
   - 发布到剧本 → 生成体验副本
-  - 副本体验 → 开始体验
+  - 副本体验 → 剧情体验
 - Microcopy rules: 明确说明“仅自己可体验”；导入作品强调“选择章节/片段范围”，原创故事强调“开局/场景版本”。
 
 ## Implementation constraints

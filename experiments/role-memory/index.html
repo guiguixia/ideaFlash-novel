@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>角色全书记忆实验</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">EXPERIMENT / ROLE MEMORY</p>
+        <h1>让角色回忆<br /><em>整部小说。</em></h1>
+        <p class="lead">选择桌面端已有作品与当前章节，输入角色名后测试其跨副本检索的原文记忆。记忆仅取所选章节及此前内容，不会剧透后续。</p>
+      </header>
+
+      <section class="panel" aria-label="角色记忆实验设置">
+        <div class="field-grid">
+          <label>作品<select id="work" disabled><option>正在加载作品…</option></select></label>
+          <label>当前章节<select id="chapter" disabled><option>请先选择作品</option></select></label>
+          <label class="wide">对话人物<input id="roleName" maxlength="80" placeholder="输入人物名，例如：萧炎" autocomplete="off" /></label>
+        </div>
+        <p class="status" id="status" aria-live="polite"></p>
+      </section>
+
+      <section class="chat" aria-label="测试对话">
+        <div class="chat-head"><span id="roleLabel">角色记忆</span><small>不会保存本次对话</small></div>
+        <div id="messages" class="messages"><p class="empty">选择作品、章节并输入人物名后，向角色提问。</p></div>
+        <form id="chatForm" class="composer">
+          <textarea id="message" rows="2" maxlength="4000" placeholder="例如：你还记得第一次见到药老时发生了什么吗？" required></textarea>
+          <button id="send" type="submit">开始测试 <span>↗</span></button>
+        </form>
+      </section>
+
+      <section id="evidencePanel" class="evidence" hidden>
+        <p class="eyebrow">RETRIEVED EVIDENCE</p>
+        <h2>本轮引用的原文记忆</h2>
+        <div id="evidenceList"></div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

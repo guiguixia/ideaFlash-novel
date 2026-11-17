@@ -202,6 +202,40 @@ def test_imported_source_segments_are_paginated_outside_work_detail():
     assert page["totalPages"] == 3
 
 
+def test_work_role_uses_one_chat_and_resets_when_memory_chapter_changes():
+    client = TestClient(app)
+    work = client.post(
+        "/api/works/import",
+        data={"work_type": "imported_novel", "title": "作品级角色"},
+        files={"file": ("book.txt", "第1章 初见\n萧炎遇见药老。\n第2章 修炼\n药老开始教导萧炎。".encode(), "text/plain")},
+    ).json()["data"]
+    role = client.post(f"/api/works/{work['id']}/roles", json={"name": "萧炎", "memory_chapter": 1}).json()["data"]
+    assert role["memoryChapter"] == 1
+    chat = client.post(f"/api/works/{work['id']}/roles/{role['id']}/chat", json={"user_setting": "师徒"}).json()["data"]
+    assert chat["history"] == []
+
+    from database import SessionLocal
+    from models import WorkRoleChatSession
+    db = SessionLocal()
+    try:
+        persisted = db.query(WorkRoleChatSession).filter_by(role_id=role["id"]).first()
+        persisted.history = [{"role": "user", "content": "旧记忆"}]
+        persisted.turn, persisted.memory_summary, persisted.summary_cursor = 1, "旧摘要", 2
+        db.commit()
+    finally:
+        db.close()
+
+    updated = client.patch(f"/api/works/{work['id']}/roles/{role['id']}", json={"name": "萧炎", "memory_chapter": 2}).json()
+    assert updated["msg"] == "记忆点已变更，唯一会话已重置"
+    reset = client.get(f"/api/works/{work['id']}/roles/{role['id']}/chat").json()["data"]
+    assert reset["turn"] == 0
+    assert reset["history"] == []
+    assert client.delete(f"/api/works/{work['id']}/roles/{role['id']}/chat").status_code == 200
+    assert client.get(f"/api/works/{work['id']}/roles/{role['id']}/chat").status_code == 404
+    assert client.get(f"/api/works/{work['id']}/roles").json()["data"][0]["hasChat"] is False
+    assert client.get(f"/api/works/{work['id']}/role-contexts", params={"name": "萧炎"}).status_code == 404
+
+
 def test_imported_script_extracts_character_names_for_later_session_selection():
     client = TestClient(app)
     headers = {}

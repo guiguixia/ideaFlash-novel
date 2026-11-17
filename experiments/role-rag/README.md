@@ -1,6 +1,6 @@
 # 角色知识 RAG 实验
 
-该实验只读取桌面端本地资料库中的 `source_segments`，并在 `output/` 下建立索引；不会修改业务数据库、体验副本或角色私聊链路。
+该实验只读取桌面端本地资料库中的 `source_segments`，并在 `output/` 下建立索引；不会修改业务数据库、体验副本或角色对话链路。
 
 ## 1. 配置 Embedding API
 
@@ -33,4 +33,4 @@ backend/.venv/bin/python experiments/role-rag/rag_experiment.py search "萧炎�
 backend/.venv/bin/python experiments/role-rag/rag_experiment.py search "戒指里有什么秘密"
 ```
 
-每条结果会显示相似度、来源章节、片段序号和原文。实验通过后，再决定是否将其接入角色私聊。
+每条结果会显示相似度、来源章节、片段序号和原文。实验通过后，再决定是否将其接入角色对话。

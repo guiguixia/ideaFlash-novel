@@ -16,7 +16,7 @@ from emotions import FIXED_EMOTION_META,FIXED_EMOTION_SLOTS,configured_emotion_s
 from auth import CurrentUser,get_current_user
 from database import Base,SessionLocal,engine,get_db,reset_legacy_schema,run_schema_migrations
 from schemas import *
-from services import _narration_completion,build_experience_snapshot,build_work_rag_index,compact_role_chat_memory,experience_role_cards,generate_role_image,generate_scene_image,narrate,narrate_stream,role_chat_reply_stream,snapshot,split_source_document,work_rag_index_progress
+from services import _json_completion,_narration_completion,build_experience_snapshot,build_work_rag_index,compact_role_chat_memory,experience_role_cards,generate_role_image,generate_scene_image,narrate,narrate_stream,snapshot,split_source_document,work_rag_index_progress,work_role_chat_reply_stream
 from trace import TraceMiddleware,trace_id
 from wechat_channel import WeChatChannel
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -117,10 +117,13 @@ def role_card(row):
  if row.image_path:images["default"]=image_url(row.image_path)
  custom=[{"id":str(item["id"]),"name":str(item.get("name") or "自定义状态"),"description":str(item.get("description") or ""),"imageUrl":image_url(item["image_path"]) if item.get("image_path") else ""} for item in custom_emotions(row)]
  return {"id":row.id,"scriptId":row.script_id,"name":row.name,"identity":row.identity,"personality":row.personality,"appearance":row.appearance,"background":row.background,"currentState":row.current_state,"attributes":row.attributes or {},"sourceSegmentOrders":row.source_segment_orders or [],"dialogueExamples":row.dialogue_examples or [],"imageUrl":images.get("default",""),"emotionImages":images,"emotionDescriptions":emotion_descriptions(row),"customEmotions":custom,"availableEmotions":configured_emotion_states(row),"roleMode":"replacement"}
-def role_chat(chat,full=False):
- d={"id":chat.id,"title":chat.title,"turn":chat.turn,"createdAt":chat.created_at.isoformat() if chat.created_at else None,"updatedAt":chat.updated_at.isoformat() if chat.updated_at else None}
+def role_conversation(chat,full=False):
+ d={"id":chat.id,"title":getattr(chat,"title","") or "唯一会话","userSetting":chat.user_setting or "","turn":chat.turn,"createdAt":chat.created_at.isoformat() if chat.created_at else None,"updatedAt":chat.updated_at.isoformat() if chat.updated_at else None}
  if full:d["history"]=normalize_role_chat_history(chat.history)
  return d
+def work_role(row):
+ image_url=f"/uploads/role-cards/{row.image_path}?v={(ROLE_ASSET_DIR/row.image_path).stat().st_mtime_ns}" if row.image_path and (ROLE_ASSET_DIR/row.image_path).exists() else ""
+ return {"id":row.id,"name":row.name,"aliases":row.aliases or [],"identity":row.identity,"personality":row.personality,"speechStyle":row.speech_style,"appearance":row.appearance,"background":row.background,"memoryChapter":row.memory_chapter,"imageUrl":image_url,"updatedAt":row.updated_at.isoformat() if row.updated_at else None}
 def seed_role_cards(db,work_id,script):
  if db.query(models.ExperienceRoleCard).filter_by(script_id=script.id).count():return
  for source in experience_role_cards(script.snapshot or {}):
@@ -140,10 +143,6 @@ def ensure_experience_session_title_available(db,script_id,title,exclude_id=""):
  query=db.query(models.ExperienceSession).filter_by(script_id=script_id,title=title)
  if exclude_id:query=query.filter(models.ExperienceSession.id!=exclude_id)
  if query.first():raise HTTPException(400,"该副本下已存在同名会话，请换一个名称")
-def ensure_role_chat_title_available(db,role_card_id,title,exclude_id=""):
- query=db.query(models.RoleChatSession).filter_by(role_card_id=role_card_id,title=title)
- if exclude_id:query=query.filter(models.RoleChatSession.id!=exclude_id)
- if query.first():raise HTTPException(400,"该角色下已存在同名私聊会话，请换一个名称")
 async def run_in_interactive_llm_worker(job,*args):
  loop=asyncio.get_running_loop()
  return await loop.run_in_executor(LLM_INTERACTIVE_WORKERS,lambda:asyncio.run(job(*args)))
@@ -304,44 +303,24 @@ async def generate_session_turn(session_id:str,events:Queue):
   events.put(("error",str(exc)))
  finally:db.close()
 
-async def generate_role_chat_turn(chat_id:str,events:Queue):
+async def generate_work_role_chat_turn(chat_id:str,events:Queue):
  db=SessionLocal()
  try:
-  chat=db.get(models.RoleChatSession,chat_id)
-  if not chat:raise RuntimeError("私聊不存在")
-  card=db.get(models.ExperienceRoleCard,chat.role_card_id)
+  chat=db.get(models.WorkRoleChatSession,chat_id)
+  if not chat:raise RuntimeError("角色会话不存在")
+  card=db.get(models.WorkRole,chat.role_id)
   if not card:raise RuntimeError("角色卡不存在")
-  script=db.get(models.ExperienceScript,card.script_id)
-  if not script:raise RuntimeError("体验副本不存在")
+  work=db.get(models.Work,card.work_id)
+  if not work:raise RuntimeError("作品不存在")
   history=normalize_role_chat_history(chat.history)
-  if len(history)<2 or history[-1].get("status")!="generating":raise RuntimeError("没有待生成的私聊消息")
-  message=str(history[-2].get("content") or "").strip();chunks=[];model="";mood="default";prefix="";waiting_for_mood=True
-  async for chunk,item_model in role_chat_reply_stream(db,script,card,history[:-1],message,chat.memory_summary or "",chat.summary_cursor or 0):
-   model=item_model
-   if waiting_for_mood:
-    prefix+=chunk
-    prefix_match=MOOD_TAG_PREFIX_RE.match(prefix)
-    if prefix_match:
-     mood=valid_mood(card,prefix_match.group(1));events.put(("mood",mood));content=prefix[prefix_match.end():];waiting_for_mood=False
-     if content:chunks.append(content);events.put(("chunk",content))
-     prefix="";continue
-    if "\n" not in prefix and len(prefix)<80:continue
-    first_line,separator,content=prefix.partition("\n");matched=MOOD_TAG_RE.match(first_line);waiting_for_mood=False
-    if matched:
-     mood=valid_mood(card,matched.group(1));events.put(("mood",mood))
-     if content:chunks.append(content);events.put(("chunk",content))
-    else:chunks.append(prefix);events.put(("chunk",prefix))
-    prefix=""
-   else:chunks.append(chunk);events.put(("chunk",chunk))
-  if waiting_for_mood and prefix:
-   matched=MOOD_TAG_RE.match(prefix)
-   if matched:mood=valid_mood(card,matched.group(1));events.put(("mood",mood))
-   else:chunks.append(prefix);events.put(("chunk",prefix))
+  if len(history)<2 or history[-1].get("status")!="generating":raise RuntimeError("没有待生成的角色消息")
+  message=str(history[-2].get("content") or "").strip();chunks=[];model=""
+  async for chunk,item_model in work_role_chat_reply_stream(db,work,card,history[:-1],message,chat.memory_summary or "",chat.summary_cursor or 0,chat.user_setting or ""):chunks.append(chunk);events.put(("chunk",chunk));model=item_model
   reply="".join(chunks).strip()
   if not reply:raise RuntimeError("大模型未返回可展示内容")
-  chat.history=history[:-1]+[{"role":"assistant","content":reply,"model":model,"mood":mood}];chat.turn+=1;await compact_role_chat_memory(db,chat,card);chat.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(chat);events.put(("done",role_chat(chat,True)))
+  chat.history=history[:-1]+[{"role":"assistant","content":reply,"model":model}];chat.turn+=1;await compact_role_chat_memory(db,chat,card);chat.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(chat);events.put(("done",role_conversation(chat,True)))
  except Exception as exc:
-  db.rollback();chat=db.get(models.RoleChatSession,chat_id)
+  db.rollback();chat=db.get(models.WorkRoleChatSession,chat_id)
   if chat:
    history=list(chat.history or [])
    if history and history[-1].get("status")=="generating":chat.history=history[:-1]+[{"role":"assistant","content":"","status":"failed","error":str(exc)}];chat.updated_at=datetime.now(timezone.utc);db.commit()
@@ -352,8 +331,8 @@ async def generate_role_chat_turn(chat_id:str,events:Queue):
 def wx_command(value:str):
  value=(value or "").strip()
  return value[1:-1].strip() if len(value)>1 and value.startswith("【") and value.endswith("】") else value
-def wx_footer():return "\n\n回复【作品】、【剧情】或【私聊】可随时切换。"
-def wx_home():return "欢迎来到剧本刷。\n回复【作品】浏览作品\n回复【剧情】开始剧情体验\n回复【私聊】与角色私聊"
+def wx_footer(in_conversation=False):return ("\n\n\n\n" if in_conversation else "\n\n")+"回复【作品】、【剧情】或【角色】可随时切换。"
+def wx_home():return "欢迎来到剧本刷。\n回复【作品】浏览作品\n回复【剧情】开始剧情体验\n回复【角色】进入角色聊天"
 def wx_set_menu(conv,mode,items):conv.mode=mode;conv.menu_items=items
 def wx_story_reply(content:str,suggestions:list[str]|None=None):
  choices=[str(item).strip() for item in (suggestions or []) if str(item).strip()]
@@ -374,12 +353,9 @@ def wx_script_menu(db,conv,work):
  if not items:return f"《{work.title}》暂时没有可体验的剧情副本。"
  wx_set_menu(conv,"script_picker",items);return f"《{work.title}》可体验剧情：\n"+"\n".join(f"{index}. {item['title']}" for index,item in enumerate(items,1))+"\n回复序号选择副本，再选择新建或续玩会话。"
 def wx_role_menu(db,conv,work):
- scripts=db.query(models.ExperienceScript).filter_by(work_id=work.id,status="ready").all();ids=[row.id for row in scripts]
- rows=db.query(models.ExperienceRoleCard).filter(models.ExperienceRoleCard.script_id.in_(ids)).order_by(models.ExperienceRoleCard.name.asc()).all() if ids else []
- titles={script.id:script.title for script in scripts}
- items=[{"id":row.id,"title":f"{titles.get(row.script_id,'未命名副本')}.{row.name}","scriptId":row.script_id} for row in rows]
- if not items:return f"《{work.title}》暂时没有可私聊的角色，请先在桌面端创建角色卡。"
- wx_set_menu(conv,"role_picker",items);return f"《{work.title}》可私聊角色：\n"+"\n".join(f"{index}. {item['title']}" for index,item in enumerate(items,1))+"\n回复序号选择角色。"
+ rows=db.query(models.WorkRole).filter_by(work_id=work.id).order_by(models.WorkRole.updated_at.desc()).all();chats={row.role_id for row in db.query(models.WorkRoleChatSession).join(models.WorkRole).filter(models.WorkRole.work_id==work.id).all()};items=[{"id":row.id,"title":row.name,"hasChat":row.id in chats} for row in rows]
+ if not items:return f"《{work.title}》还没有角色卡，请先在桌面端新增角色。"
+ wx_set_menu(conv,"role_picker",items);return f"《{work.title}》的角色：\n"+"\n".join(f"{index}. {item['title']}{'（已有会话）' if item['hasChat'] else ''}" for index,item in enumerate(items,1))+"\n回复序号选择角色。"
 async def wx_story_turn(session_id,message):
  db=SessionLocal()
  try:
@@ -398,42 +374,70 @@ async def wx_story_turn(session_id,message):
  history=done.get("history") or []
  latest=next((item for item in reversed(history) if item.get("role")=="assistant" and item.get("content")),None)
  return str((latest or {}).get("content") or "".join(chunks)).strip(),done
-async def wx_chat_turn(chat_id,message):
+async def wx_role_turn(chat_id,message):
  db=SessionLocal()
  try:
-  row=db.get(models.RoleChatSession,chat_id)
-  if not row:raise RuntimeError("私聊会话不存在")
-  history=normalize_role_chat_history(row.history);history.extend([{"role":"user","content":message},{"role":"assistant","content":"","status":"generating"}]);row.history=history;db.commit()
+  chat=db.get(models.WorkRoleChatSession,chat_id)
+  if not chat:raise RuntimeError("角色会话不存在")
+  card=db.get(models.WorkRole,chat.role_id);work=db.get(models.Work,card.work_id) if card else None
+  if not card or not work:raise RuntimeError("角色卡不存在")
+  if work.work_type!="original_story" and work.rag_status!="ready":raise RuntimeError("请先在桌面端完成来源资料的角色知识库构建")
+  history=list(chat.history or [])
+  if history and history[-1].get("status")=="generating":raise RuntimeError("上一条对话仍在生成中")
+  chat.history=history+[{"role":"user","content":message},{"role":"assistant","content":"","status":"generating"}];chat.updated_at=datetime.now(timezone.utc);db.commit()
  finally:db.close()
- events=Queue();await run_in_interactive_llm_worker(generate_role_chat_turn,chat_id,events);chunks=[]
+ events=Queue();await run_in_interactive_llm_worker(generate_work_role_chat_turn,chat_id,events);done={}
  while not events.empty():
   event,data=events.get_nowait()
-  if event=="chunk":chunks.append(str(data))
+  if event=="done":done=data
   elif event=="error":raise RuntimeError(str(data))
- return "".join(chunks).strip()
+ history=done.get("history") or [];latest=next((item for item in reversed(history) if item.get("role")=="assistant" and item.get("content")),None)
+ return str((latest or {}).get("content") or "").strip(),done
 async def wechat_reply(user_id,incoming):
  text=wx_command(incoming);db=SessionLocal()
  try:
   conv=db.query(models.WeChatConversation).order_by(models.WeChatConversation.created_at.asc()).first()
   if not conv:conv=models.WeChatConversation(wechat_user_id="single");db.add(conv);db.flush()
-  if text in {"首页","退出"}:conv.mode="home";conv.menu_items=[];conv.active_session_id="";conv.active_role_chat_id="";db.commit();return wx_home()
-  if text=="作品":conv.mode="home";conv.active_session_id="";conv.active_role_chat_id="";result=wx_work_menu(db,conv);db.commit();return result+wx_footer()
-  if text in {"剧情","私聊"}:
-   conv.active_session_id="";conv.active_role_chat_id="";work=db.get(models.Work,conv.active_work_id) if conv.active_work_id else None
-   result=(wx_script_menu(db,conv,work) if text=="剧情" else wx_role_menu(db,conv,work)) if work else wx_work_menu(db,conv,"work_for_"+("story" if text=="剧情" else "role"))
+  if text in {"首页","退出"}:conv.mode="home";conv.menu_items=[];conv.active_session_id="";db.commit();return wx_home()
+  if text=="作品":conv.mode="home";conv.active_session_id="";result=wx_work_menu(db,conv);db.commit();return result+wx_footer()
+  if text=="剧情":
+   conv.active_session_id="";work=db.get(models.Work,conv.active_work_id) if conv.active_work_id else None
+   result=wx_script_menu(db,conv,work) if work else wx_work_menu(db,conv,"work_for_story")
+   db.commit();return result+wx_footer()
+  if text in {"角色","私聊"}:
+   conv.active_session_id="";work=db.get(models.Work,conv.active_work_id) if conv.active_work_id else None
+   result=wx_role_menu(db,conv,work) if work else wx_work_menu(db,conv,"work_for_role")
    db.commit();return result+wx_footer()
   if conv.mode=="home":db.commit();return wx_home()
-  # 只有实际进入剧情或角色私聊后才接收自由文本；菜单阶段仅接受序号。
+  # 只有实际进入剧情后才接收自由文本；菜单阶段仅接受序号。
   # 用户在未进入会话时随手发消息，直接回到首页而不是写入任何会话记录。
-  if conv.mode not in {"story","role_chat"} and not text.isdigit():
+  if conv.mode not in {"story","role_setting","role_chat"} and not text.isdigit():
    conv.mode="home";conv.menu_items=[];db.commit();return wx_home()
   if conv.mode.startswith("work_"):
    if not text.isdigit() or not 1<=int(text)<=len(conv.menu_items or []):db.commit();return "请回复作品前的序号。"
    work=db.get(models.Work,(conv.menu_items or [])[int(text)-1]["id"])
    if not work:conv.mode="home";db.commit();return "作品已不存在，请重新回复【作品】。"
    conv.active_work_id=work.id;old=conv.mode;conv.menu_items=[]
-   if old=="work_picker":conv.mode="work";db.commit();return f"已进入《{work.title}》。\n回复【剧情】开始剧情体验\n回复【私聊】与角色聊天"+wx_footer()
-   result=wx_script_menu(db,conv,work) if old=="work_for_story" else wx_role_menu(db,conv,work);db.commit();return result+wx_footer()
+   if old=="work_picker":conv.mode="work";db.commit();return f"已进入《{work.title}》。\n回复【剧情】开始剧情体验\n回复【角色】进入角色聊天"+wx_footer()
+   if old=="work_for_role":result=wx_role_menu(db,conv,work);db.commit();return result+wx_footer()
+   result=wx_script_menu(db,conv,work);db.commit();return result+wx_footer()
+  if conv.mode=="role_picker":
+   if not text.isdigit() or not 1<=int(text)<=len(conv.menu_items or []):db.commit();return "请回复角色前的序号。"
+   item=(conv.menu_items or [])[int(text)-1];role=db.query(models.WorkRole).filter_by(id=item["id"],work_id=conv.active_work_id).first()
+   if not role:conv.mode="home";db.commit();return "角色卡已不存在，请重新回复【角色】。"
+   chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first();conv.menu_items=[{"id":role.id,"title":role.name}]
+   if chat:
+    conv.mode="role_chat";conv.active_session_id=chat.id;db.commit();latest=next((row for row in reversed(chat.history or []) if row.get("role")=="assistant" and row.get("content")),None);return f"已进入与 {role.name} 的聊天。\n\n"+(str((latest or {}).get("content") or "现在可以直接发送消息。"))+wx_footer(True)
+   conv.mode="role_setting";conv.active_session_id="";db.commit();return f"将与 {role.name} 建立唯一会话。请回复你的聊天设定，例如“故人”“师徒”或“陌生人”；回复“跳过”则不设定。"+wx_footer()
+  if conv.mode=="role_setting":
+   role_id=str(((conv.menu_items or [{}])[0]).get("id") or "");role=db.query(models.WorkRole).filter_by(id=role_id,work_id=conv.active_work_id).first()
+   if not role:conv.mode="home";db.commit();return "角色卡已不存在，请重新回复【角色】。"
+   chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+   if not chat:chat=models.WorkRoleChatSession(role_id=role.id,user_setting="" if text in {"跳过","无"} else text);db.add(chat);db.flush()
+   conv.mode="role_chat";conv.active_session_id=chat.id;db.commit();return f"已建立与 {role.name} 的聊天。现在可以直接发送消息。"+wx_footer(True)
+  if conv.mode=="role_chat":
+   if not conv.active_session_id:conv.mode="home";db.commit();return wx_home()
+   reply,_=await wx_role_turn(conv.active_session_id,text);db.commit();return reply+wx_footer(True)
   if conv.mode=="script_picker":
    if not text.isdigit() or not 1<=int(text)<=len(conv.menu_items or []):db.commit();return "请回复剧情前的序号。"
    script=db.get(models.ExperienceScript,(conv.menu_items or [])[int(text)-1]["id"]);work=db.get(models.Work,conv.active_work_id)
@@ -466,26 +470,10 @@ async def wechat_reply(user_id,incoming):
     latest=next((row for row in reversed(session.history or []) if row.get("role")=="assistant" and row.get("content")),None)
     heading=f"已续玩《{script.title}》。"
     body=wx_story_reply(str((latest or {}).get("content") or "该会话尚未生成剧情。"),(latest or {}).get("suggestions") or [])
-   conv.mode="story";conv.active_session_id=session.id;conv.menu_items=[];db.commit();return f"{heading}\n\n{body}"+wx_footer()
-  if conv.mode=="role_picker":
-   if not text.isdigit() or not 1<=int(text)<=len(conv.menu_items or []):db.commit();return "请回复角色前的序号。"
-   item=(conv.menu_items or [])[int(text)-1];card=db.get(models.ExperienceRoleCard,item["id"])
-   if not card:conv.mode="home";db.commit();return "角色已不存在，请重新选择。"
-   chats=db.query(models.RoleChatSession).filter_by(role_card_id=card.id).order_by(models.RoleChatSession.updated_at.desc()).all();items=[{"id":"new","title":"新建私聊"}]+[{"id":chat.id,"title":chat.title or chat.id[:5]} for chat in chats];conv.active_role_card_id=card.id;conv.active_script_id=card.script_id;conv.menu_items=items;conv.mode="chat_picker";db.commit();return f"{item['title']} 的私聊：\n"+"\n".join(f"{index}. {entry['title']}" for index,entry in enumerate(items,1))+"\n回复序号选择会话。"+wx_footer()
-  if conv.mode=="chat_picker":
-   if not text.isdigit() or not 1<=int(text)<=len(conv.menu_items or []):db.commit();return "请回复私聊会话前的序号。"
-   item=(conv.menu_items or [])[int(text)-1];card=db.get(models.ExperienceRoleCard,conv.active_role_card_id)
-   chat=models.RoleChatSession(role_card_id=card.id,title=f"微信私聊-{models.new_id()[:8]}") if item["id"]=="new" else db.query(models.RoleChatSession).filter_by(id=item["id"]).first()
-   if item["id"]=="new":db.add(chat);db.commit();db.refresh(chat)
-   if not chat:conv.mode="home";db.commit();return "会话已不存在，请重新选择。"
-   script=db.get(models.ExperienceScript,card.script_id);role_title=f"{script.title if script else '未命名副本'}.{card.name}"
-   conv.mode="role_chat";conv.active_role_chat_id=chat.id;conv.menu_items=[];db.commit();return f"已进入与{role_title}的私聊，直接发送消息即可对话。"+wx_footer()
+   conv.mode="story";conv.active_session_id=session.id;conv.menu_items=[];db.commit();return f"{heading}\n\n{body}"+wx_footer(True)
   if conv.mode=="story":
    if not conv.active_session_id:conv.mode="home";db.commit();return wx_home()
-   reply,done=await wx_story_turn(conv.active_session_id,text);history=done.get("history") or [];suggestions=(history[-1].get("suggestions") or []) if history else [];db.commit();return wx_story_reply(reply,suggestions)+wx_footer()
-  if conv.mode=="role_chat":
-   if not conv.active_role_chat_id:conv.mode="home";db.commit();return wx_home()
-   reply=await wx_chat_turn(conv.active_role_chat_id,text);db.commit();return reply+wx_footer()
+   reply,done=await wx_story_turn(conv.active_session_id,text);history=done.get("history") or [];suggestions=(history[-1].get("suggestions") or []) if history else [];db.commit();return wx_story_reply(reply,suggestions)+wx_footer(True)
   conv.mode="home";db.commit();return wx_home()
  finally:db.close()
 wechat_channel=WeChatChannel(NOVEL_DATA_DIR,wechat_reply)
@@ -598,6 +586,104 @@ def rag_index_preview(work_id:str,current_user:CurrentUser=Depends(get_current_u
  w=owned(db,work_id,current_user)
  if w.work_type=="original_story":raise HTTPException(400,"原创故事暂不支持原文知识库")
  return out({**work_rag_index_progress(db,w),"status":w.rag_status},"知识库构建预览")
+def work_role_for_work(db,work,role_id):
+ role=db.query(models.WorkRole).filter_by(id=role_id,work_id=work.id).first()
+ if not role:raise HTTPException(404,"角色卡不存在")
+ return role
+def validate_work_role_memory(db,work,chapter):
+ if work.work_type=="original_story":
+  if chapter:raise HTTPException(400,"原创故事暂不支持章节记忆点")
+  return
+ if not chapter:raise HTTPException(400,"请选择角色记忆截至的章节")
+ if not db.query(models.SourceSegment).filter_by(work_id=work.id,sequence=chapter).first():raise HTTPException(400,"记忆点章节不存在")
+def clean_work_role_aliases(name,aliases):
+ values=[]
+ for item in aliases or []:
+  for value in re.split(r"[、,，]",str(item)):
+   value=value.strip()
+   if value and value!=name and value not in values:values.append(value[:80])
+ return values
+def role_extract_evidence(db,work,name,aliases,memory_chapter):
+ terms=[name,*aliases]
+ rows=db.query(models.SourceSegment).filter(models.SourceSegment.work_id==work.id,models.SourceSegment.sequence<=memory_chapter).order_by(models.SourceSegment.sequence).all()
+ hits=[row for row in rows if any(term in row.content for term in terms)]
+ if not hits:raise HTTPException(404,"记忆范围内未找到姓名或别名的原文命中")
+ first_sequence=hits[0].sequence;recent_start=max(1,memory_chapter-1)
+ wanted={row.sequence for row in rows if abs(row.sequence-first_sequence)<=1 or (row.sequence>=recent_start and any(term in row.content for term in terms))}
+ selected=[row for row in rows if row.sequence in wanted][:8]
+ return [{"sequence":row.sequence,"title":row.title,"content":row.content[:2600]} for row in selected]
+@app.get("/api/works/{work_id}/roles")
+def work_roles(work_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);chats={row.role_id:row for row in db.query(models.WorkRoleChatSession).join(models.WorkRole).filter(models.WorkRole.work_id==w.id).all()};return out([{**work_role(row),"hasChat":row.id in chats,"chatUpdatedAt":chats[row.id].updated_at.isoformat() if row.id in chats and chats[row.id].updated_at else None} for row in db.query(models.WorkRole).filter_by(work_id=w.id).order_by(models.WorkRole.updated_at.desc()).all()],"作品角色卡")
+@app.post("/api/works/{work_id}/roles")
+def work_role_create(work_id:str,body:WorkRoleUpsertRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);validate_work_role_memory(db,w,body.memory_chapter);name=body.name.strip();role=models.WorkRole(work_id=w.id,name=name,aliases=clean_work_role_aliases(name,body.aliases),identity=body.identity.strip(),personality=body.personality.strip(),speech_style=body.speech_style.strip(),appearance=body.appearance.strip(),background=body.background.strip(),memory_chapter=body.memory_chapter);db.add(role);db.commit();db.refresh(role);return out(work_role(role),"角色卡已创建")
+@app.patch("/api/works/{work_id}/roles/{role_id}")
+def work_role_update(work_id:str,role_id:str,body:WorkRoleUpsertRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id);validate_work_role_memory(db,w,body.memory_chapter);memory_changed=role.memory_chapter!=body.memory_chapter;name=body.name.strip();role.name,role.aliases,role.identity,role.personality,role.speech_style,role.appearance,role.background,role.memory_chapter=name,clean_work_role_aliases(name,body.aliases),body.identity.strip(),body.personality.strip(),body.speech_style.strip(),body.appearance.strip(),body.background.strip(),body.memory_chapter
+ if memory_changed:
+  chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+  if chat:chat.history=[];chat.turn=0;chat.memory_summary="";chat.summary_cursor=0
+ db.commit();db.refresh(role);return out(work_role(role),"记忆点已变更，唯一会话已重置" if memory_changed else "角色卡已保存")
+@app.post("/api/works/{work_id}/roles/extract")
+async def work_role_extract(work_id:str,body:WorkRoleExtractRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user)
+ if w.work_type=="original_story":raise HTTPException(400,"原创作品没有可供原文提取的章节资料")
+ validate_work_role_memory(db,w,body.memory_chapter);name=body.name.strip();aliases=clean_work_role_aliases(name,body.aliases);evidence=role_extract_evidence(db,w,name,aliases,body.memory_chapter)
+ source="\n\n".join(f"[第{item['sequence']}章 {item['title']}]\n{item['content']}" for item in evidence)
+ prompt=f'''你是小说角色卡提炼助手。只依据提供原文提炼角色「{name}」，不能编造或使用原文外信息。\n检索词：{json.dumps([name,*aliases],ensure_ascii=False)}。\n\n原文证据：\n{source}\n\n输出严格 JSON：{{"background":"","appearance":"","personality":"","speechStyle":""}}。\nbackground 写稳定背景、经历与关系；appearance 只写原文明示外貌；personality 写稳定性格；speechStyle 写称呼、句式、措辞与语气。证据不足时用空字符串。每个字段不超过 500 字。'''
+ data=await _json_completion(db,prompt,stage=f"work_role_extract:{work_id}:{body.memory_chapter}")
+ return out({"name":name,"aliases":aliases,"memoryChapter":body.memory_chapter,"background":str(data.get("background") or "")[:500],"appearance":str(data.get("appearance") or "")[:500],"personality":str(data.get("personality") or "")[:500],"speechStyle":str(data.get("speechStyle") or "")[:500],"evidence":[{"sequence":item["sequence"],"title":item["title"]} for item in evidence]},"角色卡原文信息已提炼")
+@app.post("/api/works/{work_id}/roles/{role_id}/image")
+async def work_role_image(work_id:str,role_id:str,file:UploadFile=File(...),current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id);raw=await file.read();suffix={"image/jpeg":".jpg","image/png":".png","image/webp":".webp","image/gif":".gif"}.get(file.content_type or "")
+ if not suffix:raise HTTPException(400,"仅支持 JPG、PNG、WebP 或 GIF 图片")
+ if not raw or len(raw)>5*1024*1024:raise HTTPException(400,"图片不能为空且不得超过 5MB")
+ path=f"work-role-{role.id}{suffix}";(ROLE_ASSET_DIR/path).write_bytes(raw);role.image_path=path;db.commit();db.refresh(role);return out(work_role(role),"角色参考图已上传")
+@app.get("/api/works/{work_id}/roles/{role_id}/chat")
+def work_role_chat_get(work_id:str,role_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id);chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+ if not chat:raise HTTPException(404,"该角色尚未建立会话")
+ return out(role_conversation(chat,True),"角色唯一会话")
+@app.post("/api/works/{work_id}/roles/{role_id}/chat")
+def work_role_chat_create(work_id:str,role_id:str,body:WorkRoleChatCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id)
+ if db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first():raise HTTPException(409,"该角色已有唯一会话")
+ chat=models.WorkRoleChatSession(role_id=role.id,user_setting=body.user_setting.strip());db.add(chat);db.commit();db.refresh(chat);return out(role_conversation(chat,True),"角色唯一会话已创建")
+@app.patch("/api/works/{work_id}/roles/{role_id}/chat")
+def work_role_chat_update(work_id:str,role_id:str,body:WorkRoleChatCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id);chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+ if not chat:raise HTTPException(404,"该角色尚未建立会话")
+ chat.user_setting=body.user_setting.strip();db.commit();db.refresh(chat);return out(role_conversation(chat,True),"聊天用户设定已保存")
+@app.delete("/api/works/{work_id}/roles/{role_id}/chat")
+def work_role_chat_delete(work_id:str,role_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id);chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+ if not chat:raise HTTPException(404,"该角色尚未建立会话")
+ db.delete(chat);db.commit();return out({},"角色会话已删除")
+@app.post("/api/works/{work_id}/roles/{role_id}/chat/reset")
+def work_role_chat_reset(work_id:str,role_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id);chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+ if not chat:raise HTTPException(404,"该角色尚未建立会话")
+ else:chat.history=[];chat.turn=0;chat.memory_summary="";chat.summary_cursor=0
+ db.commit();db.refresh(chat);return out(role_conversation(chat,True),"唯一会话已重置")
+@app.post("/api/works/{work_id}/roles/{role_id}/chat/turn")
+async def work_role_chat_turn(work_id:str,role_id:str,body:RoleConversationTurnRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);role=work_role_for_work(db,w,role_id)
+ if w.work_type!="original_story" and w.rag_status!="ready":raise HTTPException(409,"请先在来源资料中构建完成角色知识库")
+ chat=db.query(models.WorkRoleChatSession).filter_by(role_id=role.id).first()
+ if not chat:raise HTTPException(404,"该角色尚未建立会话")
+ history=list(chat.history or [])
+ if history and history[-1].get("status")=="generating":raise HTTPException(409,"上一条对话仍在生成中")
+ chat.history=history+[{"role":"user","content":body.message.strip()},{"role":"assistant","content":"","status":"generating"}];chat.updated_at=datetime.now(timezone.utc);db.commit();events:Queue=Queue();enqueue_interactive_llm_worker(generate_work_role_chat_turn,chat.id,events)
+ def sse(event,data):return f"event: {event}\ndata: {json.dumps(data,ensure_ascii=False)}\n\n"
+ async def stream():
+  while True:
+   try:event,data=events.get_nowait()
+   except Empty:await asyncio.sleep(.08);continue
+   if event=="chunk":yield sse("chunk",{"content":data})
+   elif event=="done":yield sse("done",{"session":data});return
+   else:yield sse("error",{"message":data});return
+ return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 @app.patch("/api/works/{work_id}")
 def work_update(work_id:str,body:WorkUpdateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user)
@@ -621,14 +707,6 @@ def script_role_cards(work_id:str,script_id:str,current_user:CurrentUser=Depends
  if not s:raise HTTPException(404,"体验副本不存在")
  if s.status!="ready":raise HTTPException(409,"体验副本仍在构建中")
  seed_role_cards(db,w.id,s);return out([role_card(row) for row in db.query(models.ExperienceRoleCard).filter_by(work_id=w.id,script_id=s.id).order_by(models.ExperienceRoleCard.created_at).all()],"副本角色卡")
-@app.get("/api/works/{work_id}/role-contexts")
-def role_contexts(work_id:str,name:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);role_name=name.strip()
- if not role_name:raise HTTPException(400,"缺少角色名称")
- scripts=db.query(models.ExperienceScript).filter_by(work_id=w.id,status="ready").order_by(models.ExperienceScript.created_at.desc()).all()
- for script in scripts:seed_role_cards(db,w.id,script)
- cards=db.query(models.ExperienceRoleCard).filter_by(work_id=w.id,name=role_name).all();by_script={card.script_id:card for card in cards}
- return out([{"script":sd(script),"card":role_card(by_script[script.id])} for script in scripts if script.id in by_script],"角色可切换副本")
 @app.post("/api/works/{work_id}/scripts/{script_id}/role-cards")
 def role_card_create(work_id:str,script_id:str,body:RoleCardUpsertRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);s=db.query(models.ExperienceScript).filter_by(id=script_id,work_id=w.id).first()
@@ -720,53 +798,6 @@ def role_card_custom_emotion_delete(work_id:str,script_id:str,card_id:str,emotio
  w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);items=custom_emotions(card);remaining=[item for item in items if item["id"]!=emotion_id]
  if len(remaining)==len(items):raise HTTPException(404,"自定义状态不存在")
  card.custom_emotions=remaining;db.commit();db.refresh(card);return out(role_card(card),"自定义状态已删除")
-@app.post("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats")
-def role_chat_create(work_id:str,script_id:str,card_id:str,body:RoleChatCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);title=body.title.strip()
- if title:ensure_role_chat_title_available(db,card.id,title)
- chat=models.RoleChatSession(role_card_id=card.id,title=title);db.add(chat);db.flush()
- if not chat.title:chat.title=f"会话 #{chat.id[:8].upper()}"
- db.commit();db.refresh(chat);return out(role_chat(chat,True),"私聊已创建")
-@app.get("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats")
-def role_chat_list(work_id:str,script_id:str,card_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);rows=db.query(models.RoleChatSession).filter_by(role_card_id=card.id).order_by(models.RoleChatSession.updated_at.desc(),models.RoleChatSession.created_at.desc()).all();return out([role_chat(row) for row in rows],"私聊会话")
-@app.get("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats/{chat_id}")
-def role_chat_get(work_id:str,script_id:str,card_id:str,chat_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);chat=db.query(models.RoleChatSession).filter_by(id=chat_id,role_card_id=card.id).first()
- if not chat:raise HTTPException(404,"私聊不存在")
- return out(role_chat(chat,True))
-@app.patch("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats/{chat_id}")
-def role_chat_update(work_id:str,script_id:str,card_id:str,chat_id:str,body:RoleChatUpdateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);chat=db.query(models.RoleChatSession).filter_by(id=chat_id,role_card_id=card.id).first()
- if not chat:raise HTTPException(404,"私聊不存在")
- title=body.title.strip()
- if title:
-  ensure_role_chat_title_available(db,card.id,title,exclude_id=chat.id);chat.title=title
- if not title:raise HTTPException(400,"会话名称不能为空")
- db.commit();db.refresh(chat);return out(role_chat(chat),"私聊会话已保存")
-@app.delete("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats/{chat_id}")
-def role_chat_delete(work_id:str,script_id:str,card_id:str,chat_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);_,card=role_card_for_script(db,w,script_id,card_id);chat=db.query(models.RoleChatSession).filter_by(id=chat_id,role_card_id=card.id).first()
- if not chat:raise HTTPException(404,"私聊不存在")
- db.delete(chat);db.commit();return out({"id":chat_id},"私聊已删除")
-@app.post("/api/works/{work_id}/scripts/{script_id}/role-cards/{card_id}/chats/{chat_id}/turn")
-async def role_chat_turn(work_id:str,script_id:str,card_id:str,chat_id:str,body:RoleChatTurnRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
- w=owned(db,work_id,current_user);script,card=role_card_for_script(db,w,script_id,card_id);chat=db.query(models.RoleChatSession).filter_by(id=chat_id,role_card_id=card.id).first()
- if not chat:raise HTTPException(404,"私聊不存在")
- history=list(chat.history or [])
- if history and history[-1].get("role")=="assistant" and history[-1].get("status")=="generating":raise HTTPException(409,"上一条私聊仍在生成中")
- history.extend([{"role":"user","content":body.message.strip()},{"role":"assistant","content":"","status":"generating"}]);chat.history=history;chat.updated_at=datetime.now(timezone.utc);db.commit();events:Queue=Queue();enqueue_interactive_llm_worker(generate_role_chat_turn,chat.id,events)
- def sse(event:str,data:dict):return f"event: {event}\ndata: {json.dumps(data,ensure_ascii=False)}\n\n"
- async def stream():
-  while True:
-   try:event,data=events.get_nowait()
-   except Empty:
-    await asyncio.sleep(.08);continue
-   if event=="chunk":yield sse("chunk",{"content":data})
-   elif event=="mood":yield sse("mood",{"mood":data})
-   elif event=="done":yield sse("done",{"session":data});return
-   else:yield sse("error",{"message":data});return
- return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
 @app.post("/api/works/{work_id}/scripts/{script_id}/sessions")
 async def session_create(work_id:str,script_id:str,body:ExperienceSessionCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);s=db.query(models.ExperienceScript).filter_by(id=script_id,work_id=w.id).first()

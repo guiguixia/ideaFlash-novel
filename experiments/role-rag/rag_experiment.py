@@ -2,7 +2,7 @@
 """与业务隔离的小说角色 RAG 实验。
 
 构建命令只读取本地 source_segments；向量索引写入本目录 output，
-不会写入业务数据库，也不会改变任何私聊/副本调用链路。
+不会写入业务数据库，也不会改变任何角色对话/副本调用链路。
 """
 
 from __future__ import annotations

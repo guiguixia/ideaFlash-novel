@@ -45,11 +45,13 @@ def run_schema_migrations():
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (2, CURRENT_TIMESTAMP)")
         role_chat_memory=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 3").first()
         if not role_chat_memory:
-            columns={column["name"] for column in inspect(engine).get_columns("role_chat_sessions")}
-            if "memory_summary" not in columns:
-                connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN memory_summary TEXT NOT NULL DEFAULT ''")
-            if "summary_cursor" not in columns:
-                connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN summary_cursor INTEGER NOT NULL DEFAULT 0")
+            tables=set(inspect(engine).get_table_names())
+            if "role_chat_sessions" in tables:
+                columns={column["name"] for column in inspect(engine).get_columns("role_chat_sessions")}
+                if "memory_summary" not in columns:
+                    connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN memory_summary TEXT NOT NULL DEFAULT ''")
+                if "summary_cursor" not in columns:
+                    connection.exec_driver_sql("ALTER TABLE role_chat_sessions ADD COLUMN summary_cursor INTEGER NOT NULL DEFAULT 0")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (3, CURRENT_TIMESTAMP)")
         role_card_emotions=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 4").first()
         if not role_card_emotions:
@@ -117,8 +119,37 @@ def run_schema_migrations():
         wechat_session_scope=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 11").first()
         if not wechat_session_scope:
             for table in ("experience_sessions","role_chat_sessions"):
+                if table not in inspect(engine).get_table_names(): continue
                 columns={column["name"] for column in inspect(engine).get_columns(table)}
                 if "wechat_user_id" not in columns:
                     connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN wechat_user_id VARCHAR(160) NOT NULL DEFAULT ''")
                     connection.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_wechat_user_id ON {table} (wechat_user_id)")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (11, CURRENT_TIMESTAMP)")
+        work_roles=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 12").first()
+        if not work_roles:
+            # work_roles 与 work_role_chat_sessions 由 Base.metadata.create_all 先行创建。
+            # 旧 experience_role_cards 原样保留为“副本角色资源”，不迁移其旧会话记录，
+            # 避免不同副本的时间范围和历史会话被错误合并到作品级角色。
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (12, CURRENT_TIMESTAMP)")
+        remove_legacy_role_chat=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 13").first()
+        if not remove_legacy_role_chat:
+            connection.exec_driver_sql("DROP TABLE IF EXISTS role_chat_sessions")
+            if "wechat_conversations" in inspect(engine).get_table_names():
+                columns={column["name"] for column in inspect(engine).get_columns("wechat_conversations")}
+                for column in ("active_role_card_id", "active_role_chat_id"):
+                    if column in columns: connection.exec_driver_sql(f"ALTER TABLE wechat_conversations DROP COLUMN {column}")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (13, CURRENT_TIMESTAMP)")
+        role_card_extraction=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 14").first()
+        if not role_card_extraction:
+            columns={column["name"] for column in inspect(engine).get_columns("work_roles")}
+            if "aliases" not in columns:
+                connection.exec_driver_sql("ALTER TABLE work_roles ADD COLUMN aliases JSON NOT NULL DEFAULT '[]'")
+            if "speech_style" not in columns:
+                connection.exec_driver_sql("ALTER TABLE work_roles ADD COLUMN speech_style TEXT NOT NULL DEFAULT ''")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (14, CURRENT_TIMESTAMP)")
+        role_chat_user_setting=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 15").first()
+        if not role_chat_user_setting:
+            columns={column["name"] for column in inspect(engine).get_columns("work_role_chat_sessions")}
+            if "user_setting" not in columns:
+                connection.exec_driver_sql("ALTER TABLE work_role_chat_sessions ADD COLUMN user_setting TEXT NOT NULL DEFAULT ''")
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (15, CURRENT_TIMESTAMP)")

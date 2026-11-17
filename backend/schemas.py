@@ -11,8 +11,9 @@ class ExperienceTurnRequest(BaseModel):message:str=Field(min_length=1,max_length
 class RoleCardUpsertRequest(BaseModel):name:str=Field(min_length=1,max_length=80);identity:str="";personality:str="";appearance:str="";background:str="";current_state:str=""
 class RoleCardCustomEmotionRequest(BaseModel):name:str=Field(min_length=1,max_length=40);description:str=Field(default="",max_length=160)
 class RoleCardEmotionDescriptionRequest(BaseModel):description:str=Field(min_length=1,max_length=160)
-class RoleChatPlayerProfile(BaseModel):identity:str=Field(default="",max_length=160);gender:str=Field(default="",max_length=40);age:str=Field(default="",max_length=40);description:str=Field(default="",max_length=800)
-class UserProfileUpdateRequest(RoleChatPlayerProfile):pass
-class RoleChatCreateRequest(BaseModel):title:str=""
-class RoleChatUpdateRequest(BaseModel):title:str=""
-class RoleChatTurnRequest(BaseModel):message:str=Field(min_length=1,max_length=4000)
+class RoleConversationPlayerProfile(BaseModel):identity:str=Field(default="",max_length=160);gender:str=Field(default="",max_length=40);age:str=Field(default="",max_length=40);description:str=Field(default="",max_length=800)
+class UserProfileUpdateRequest(RoleConversationPlayerProfile):pass
+class RoleConversationTurnRequest(BaseModel):message:str=Field(min_length=1,max_length=4000)
+class WorkRoleUpsertRequest(BaseModel):name:str=Field(min_length=1,max_length=80);aliases:list[str]=Field(default_factory=list,max_length=20);identity:str="";personality:str="";speech_style:str="";appearance:str="";background:str="";memory_chapter:int=Field(default=0,ge=0)
+class WorkRoleExtractRequest(BaseModel):name:str=Field(min_length=1,max_length=80);aliases:list[str]=Field(default_factory=list,max_length=20);memory_chapter:int=Field(ge=1)
+class WorkRoleChatCreateRequest(BaseModel):user_setting:str=Field(default="",max_length=500)
