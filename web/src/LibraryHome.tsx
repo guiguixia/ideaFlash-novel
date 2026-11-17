@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import {
   BookOpen,
@@ -14,12 +14,16 @@ import {
   Sparkles,
   Swords,
   X,
+  Download,
+  FileUp,
+  ListChecks,
 } from "lucide-react";
 import {
   kernelDelete,
   kernelGet,
   kernelPost,
   kernelUpload,
+  kernelUrl,
 } from "./lib/kernel-api";
 
 type Kind = "original_story" | "imported_novel" | "imported_screenwork";
@@ -31,6 +35,7 @@ type Work = {
   sourceSegmentCount: number;
   scriptCount: number;
 };
+type TransferTask = { id:string; type:"import"|"export"; status:string; stage:string; processed:number; total:number; error:string; workId:string|null; fileUrl:string; createdAt:string|null };
 type StoryDraft = {
   title: string;
   summary: string;
@@ -183,7 +188,10 @@ export function LibraryHome() {
     [file, setFile] = useState<File | null>(null),
     [busy, setBusy] = useState(false),
     [deletingId, setDeletingId] = useState<string | null>(null),
+    [tasks, setTasks] = useState<TransferTask[]>([]),
+    [taskOpen, setTaskOpen] = useState(false),
     [error, setError] = useState("");
+  const packageInput = useRef<HTMLInputElement>(null);
   const load = () =>
     kernelGet<Work[]>("/api/works")
       .then(setWorks)
@@ -199,6 +207,20 @@ export function LibraryHome() {
   useEffect(() => {
     void load();
   }, []);
+  const loadTasks = () => kernelGet<TransferTask[]>("/api/transfer-tasks").then(setTasks).catch(() => undefined);
+  useEffect(() => { void loadTasks(); const timer=window.setInterval(() => void loadTasks(), 1800); return () => window.clearInterval(timer); }, []);
+  useEffect(() => { if (tasks.some((task) => task.status === "succeeded" && task.type === "import")) void load(); }, [tasks]);
+  async function importPackage(file: File | null) {
+    if (!file) return;
+    setBusy(true); setError("");
+    try { const form=new FormData();form.append("file",file);await kernelUpload<TransferTask>("/api/works/package-import",form);setTaskOpen(true);await loadTasks(); }
+    catch (e) { setError(failure(e)); } finally { setBusy(false); if(packageInput.current) packageInput.current.value=""; }
+  }
+  async function exportWork(work:Work) {
+    setError("");
+    try { await kernelPost<TransferTask>(`/api/works/${work.id}/export`);setTaskOpen(true);await loadTasks(); }
+    catch (e) { setError(failure(e)); }
+  }
   function begin(next: Kind = "original_story") {
     if (next === "imported_screenwork") return;
     setKind(next);
@@ -345,23 +367,7 @@ export function LibraryHome() {
           <Library className="size-5 text-brand" />
           我的作品
         </button>
-        <button
-          type="button"
-          onClick={() => nav("/wechat")}
-          title="微信接入"
-          aria-label="微信接入"
-          className="rounded-lg p-2 hover:bg-hover"
-        >
-          <Bot className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => nav("/settings")}
-          className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-hover"
-        >
-          <Settings className="size-4" />
-          设置
-        </button>
+        <div className="flex items-center gap-1"><button type="button" onClick={() => setTaskOpen(true)} title="任务中心" className="relative rounded-lg p-2 hover:bg-hover"><ListChecks className="size-4" />{tasks.some((task)=>task.status==="queued"||task.status==="running")&&<span className="absolute right-0 top-0 size-2 rounded-full bg-brand" />}</button><button type="button" onClick={() => nav("/wechat")} title="微信接入" aria-label="微信接入" className="rounded-lg p-2 hover:bg-hover"><Bot className="size-4" /></button><button type="button" onClick={() => nav("/settings")} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-hover"><Settings className="size-4" />设置</button></div>
       </header>
       <div className="mx-auto max-w-6xl px-6 pb-12">
         <div className="flex items-end justify-between gap-4">
@@ -371,13 +377,7 @@ export function LibraryHome() {
               进入、改造、体验你的故事
             </h1>
           </div>
-          <button
-            onClick={() => begin()}
-            className="inline-flex items-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-primary-foreground"
-          >
-            <Plus className="size-4" />
-            新建作品
-          </button>
+          <div className="flex gap-2"><button onClick={() => packageInput.current?.click()} className="inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium hover:bg-hover"><FileUp className="size-4" />导入作品</button><input ref={packageInput} type="file" accept=".zip" className="hidden" onChange={(event)=>void importPackage(event.target.files?.[0]||null)} /><button onClick={() => begin()} className="inline-flex items-center gap-2 rounded-lg bg-foreground px-4 py-2.5 text-sm font-medium text-primary-foreground"><Plus className="size-4" />新建作品</button></div>
         </div>
         {works.length ? (
           <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -407,6 +407,7 @@ export function LibraryHome() {
                       : `${work.sourceSegmentCount} 个资料片段 · ${work.scriptCount} 个副本`}
                   </p>
                 </button>
+                <button type="button" title={`导出 ${work.title}`} onClick={(event)=>{event.stopPropagation();void exportWork(work)}} className="absolute bottom-3 right-3 rounded-lg p-2 text-muted-foreground hover:bg-brand-soft hover:text-brand"><Download className="size-4" /></button>
                 <button
                   type="button"
                   aria-label={`删除作品 ${work.title}`}
@@ -448,6 +449,7 @@ export function LibraryHome() {
             </div>
           </section>
         )}
+        {taskOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-foreground/25 p-4" onMouseDown={()=>setTaskOpen(false)}><section role="dialog" aria-modal="true" className="w-full max-w-lg rounded-2xl border bg-workspace p-5 shadow-xl" onMouseDown={(event)=>event.stopPropagation()}><header className="flex items-start justify-between"><div><p className="text-xs font-semibold text-brand">任务中心</p><h2 className="mt-1 text-xl font-semibold">作品导入与导出</h2></div><button onClick={()=>setTaskOpen(false)} className="rounded-md px-2 py-1 text-sm hover:bg-hover">关闭</button></header><div className="mt-5 space-y-2">{tasks.length===0?<p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">暂时没有导入或导出任务。</p>:tasks.map(task=><div key={task.id} className="rounded-xl border bg-surface px-4 py-3"><div className="flex items-center justify-between text-sm"><span className="font-medium">{task.type==="import"?"导入作品":"导出作品"}</span><span className={task.status==="failed"?"text-destructive":task.status==="succeeded"?"text-brand":"text-muted-foreground"}>{task.status==="succeeded"?"已完成":task.status==="failed"?"失败":task.stage}</span></div><p className="mt-1 text-xs text-muted-foreground">{task.total?`${task.processed}/${task.total} · `:""}{task.error||task.stage}</p><div className="mt-2 flex gap-3">{task.fileUrl&&<a href={kernelUrl(task.fileUrl)} download className="inline-flex items-center gap-1 text-xs font-medium text-brand"><Download className="size-3" />下载作品包</a>}{(task.status==="failed"||task.status==="cancelled")&&<button onClick={()=>void kernelPost(`/api/transfer-tasks/${task.id}/retry`).then(loadTasks).catch((e)=>setError(failure(e)))} className="text-xs text-brand">重试</button>}{task.status==="queued"&&<button onClick={()=>void kernelDelete(`/api/transfer-tasks/${task.id}`).then(loadTasks).catch((e)=>setError(failure(e)))} className="text-xs text-destructive">取消</button>}</div></div>)}</div></section></div>}
         {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
       </div>
       {open && (

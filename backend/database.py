@@ -153,3 +153,7 @@ def run_schema_migrations():
             if "user_setting" not in columns:
                 connection.exec_driver_sql("ALTER TABLE work_role_chat_sessions ADD COLUMN user_setting TEXT NOT NULL DEFAULT ''")
             connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (15, CURRENT_TIMESTAMP)")
+        transfer_tasks=connection.exec_driver_sql("SELECT 1 FROM app_schema_migrations WHERE version = 16").first()
+        if not transfer_tasks:
+            # 新表由 Base.metadata.create_all 创建；迁移标记用于已存在的桌面数据库。
+            connection.exec_driver_sql("INSERT INTO app_schema_migrations (version, applied_at) VALUES (16, CURRENT_TIMESTAMP)")

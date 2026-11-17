@@ -7,7 +7,7 @@ from queue import Empty,Queue
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks,Depends,FastAPI,File,Form,HTTPException,Response,UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse,FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 import httpx
@@ -19,15 +19,20 @@ from schemas import *
 from services import _json_completion,_narration_completion,build_experience_snapshot,build_work_rag_index,compact_role_chat_memory,experience_role_cards,generate_role_image,generate_scene_image,narrate,narrate_stream,snapshot,split_source_document,work_rag_index_progress,work_role_chat_reply_stream
 from trace import TraceMiddleware,trace_id
 from wechat_channel import WeChatChannel
+from work_transfer import export_work,import_work,task_data
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 NOVEL_DATA_DIR=Path(os.getenv("NOVEL_DATA_DIR") or Path(__file__).resolve().parent / "data")
 ROLE_ASSET_DIR=NOVEL_DATA_DIR / "role-cards";ROLE_ASSET_DIR.mkdir(parents=True,exist_ok=True)
 SCENE_ASSET_DIR=NOVEL_DATA_DIR / "scene-images";SCENE_ASSET_DIR.mkdir(parents=True,exist_ok=True)
+TRANSFER_DIR=NOVEL_DATA_DIR / "transfers";TRANSFER_DIR.mkdir(parents=True,exist_ok=True)
 DEFAULT_COMMUNITY_QR_IMAGE_URL="https://ideaflash-releases.oss-cn-shanghai.aliyuncs.com/story/image/public/ideaFlash-%E5%89%A7%E6%9C%AC%E5%88%B7%E8%AE%A8%E8%AE%BA%E7%BE%A4.png"
 # 导入资料的副本构建会连续调用很多次模型；它与用户正在进行的体验必须隔离，
 # 否则多个构建任务会占满线程，使新开场或对话只能无期限排队。
 LLM_BUILD_WORKERS=ThreadPoolExecutor(max_workers=1,thread_name_prefix="story-build-llm")
 LLM_INTERACTIVE_WORKERS=ThreadPoolExecutor(max_workers=2,thread_name_prefix="story-interactive-llm")
+# 文件打包与恢复涉及磁盘压缩、解压和大量数据库写入；独立队列保证不会占用
+# 剧情生成或角色对话的工作线程，更不会阻塞 API 主线程。
+TRANSFER_WORKERS=ThreadPoolExecutor(max_workers=1,thread_name_prefix="work-transfer")
 reset_legacy_schema();Base.metadata.create_all(engine);run_schema_migrations()
 def recover_interrupted_experience_builds():
  db=SessionLocal()
@@ -40,7 +45,15 @@ def recover_interrupted_experience_builds():
   if runs:db.commit()
  finally:db.close()
 recover_interrupted_experience_builds()
-app=FastAPI(title="Story Experience API",version="1.0.0");app.add_middleware(TraceMiddleware);app.add_middleware(CORSMiddleware,allow_origins=["http://127.0.0.1:5179","http://localhost:5179","null"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"]);app.mount("/uploads/role-cards",StaticFiles(directory=str(ROLE_ASSET_DIR)),name="role-card-assets");app.mount("/uploads/scene-images",StaticFiles(directory=str(SCENE_ASSET_DIR)),name="scene-image-assets")
+def recover_interrupted_transfer_tasks():
+ db=SessionLocal()
+ try:
+  rows=db.query(models.WorkTransferTask).filter(models.WorkTransferTask.status.in_(("queued","running"))).all()
+  for row in rows:row.status,row.stage,row.error="failed","失败","任务被服务重启中断，请重新发起"
+  if rows:db.commit()
+ finally:db.close()
+recover_interrupted_transfer_tasks()
+app=FastAPI(title="Story Experience API",version="1.0.0");app.add_middleware(TraceMiddleware);app.add_middleware(CORSMiddleware,allow_origins=["http://127.0.0.1:5179","http://localhost:5179","null"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"]);app.mount("/uploads/role-cards",StaticFiles(directory=str(ROLE_ASSET_DIR)),name="role-card-assets");app.mount("/uploads/scene-images",StaticFiles(directory=str(SCENE_ASSET_DIR)),name="scene-image-assets");app.mount("/uploads/transfers",StaticFiles(directory=str(TRANSFER_DIR)),name="transfer-assets")
 def out(data=None,msg="ok"):return {"code":0,"data":data,"msg":msg,"traceId":trace_id()}
 def lst(data,msg="ok"):return {"code":0,"list":data,"msg":msg,"traceId":trace_id()}
 def wd(w,counts=None):
@@ -547,6 +560,39 @@ def works(current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(
 @app.post("/api/works")
 def work_create(body:WorkCreateRequest,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=models.Work(platform_user_id=current_user.platform_user_id,title=body.title.strip(),work_type="original_story",summary=body.summary.strip(),settings={"genre":body.genre,"world":body.world,"playerIdentity":body.player_identity,"openingScene":body.opening_scene,"tone":body.tone});db.add(w);db.commit();db.refresh(w);return out(wd(w),"原创故事已创建")
+def enqueue_transfer(job,*args):
+ def run():
+  db=SessionLocal()
+  try:job(db,*args)
+  finally:db.close()
+ TRANSFER_WORKERS.submit(run)
+@app.get("/api/transfer-tasks")
+def transfer_tasks(current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ rows=db.query(models.WorkTransferTask).filter_by(platform_user_id=current_user.platform_user_id).order_by(models.WorkTransferTask.updated_at.desc()).limit(30).all();return out([task_data(x,TRANSFER_DIR) for x in rows])
+@app.post("/api/transfer-tasks/{task_id}/retry")
+def transfer_task_retry(task_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ task=db.query(models.WorkTransferTask).filter_by(id=task_id,platform_user_id=current_user.platform_user_id).first()
+ if not task:raise HTTPException(404,"任务不存在")
+ if task.status not in {"failed","cancelled"}:raise HTTPException(409,"仅失败或已取消的任务可以重试")
+ task.status,task.stage,task.error,task.processed="queued","排队中","",0;db.commit()
+ if task.task_type=="export":enqueue_transfer(export_work,task.id,ROLE_ASSET_DIR,TRANSFER_DIR)
+ else:enqueue_transfer(import_work,task.id,TRANSFER_DIR,ROLE_ASSET_DIR)
+ return out(task_data(task,TRANSFER_DIR),"任务已重新加入队列")
+@app.delete("/api/transfer-tasks/{task_id}")
+def transfer_task_cancel(task_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ task=db.query(models.WorkTransferTask).filter_by(id=task_id,platform_user_id=current_user.platform_user_id).first()
+ if not task:raise HTTPException(404,"任务不存在")
+ if task.status!="queued":raise HTTPException(409,"只能取消排队中的任务")
+ task.status,task.stage="cancelled","已取消";db.commit();return out(task_data(task,TRANSFER_DIR),"任务已取消")
+@app.post("/api/works/{work_id}/export")
+def work_export(work_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);task=models.WorkTransferTask(platform_user_id=current_user.platform_user_id,work_id=w.id,task_type="export");db.add(task);db.commit();db.refresh(task);enqueue_transfer(export_work,task.id,ROLE_ASSET_DIR,TRANSFER_DIR);return out(task_data(task,TRANSFER_DIR),"作品导出已加入任务中心")
+@app.post("/api/works/package-import")
+async def work_package_import(file:UploadFile=File(...),current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ if not (file.filename or "").endswith(".zip"):raise HTTPException(400,"请选择作品导出包（.zip）")
+ raw=await file.read()
+ if not raw or len(raw)>200*1024*1024:raise HTTPException(400,"作品包不能为空且不得超过 200MB")
+ task=models.WorkTransferTask(platform_user_id=current_user.platform_user_id,task_type="import");db.add(task);db.flush();name=f"{task.id}.zip";(TRANSFER_DIR/name).write_bytes(raw);task.input_path=name;db.commit();db.refresh(task);enqueue_transfer(import_work,task.id,TRANSFER_DIR,ROLE_ASSET_DIR);return out(task_data(task,TRANSFER_DIR),"作品导入已加入任务中心")
 @app.get("/api/profile")
 def user_profile_get(current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  profile=db.get(models.UserProfile,1) or models.UserProfile(id=1)
