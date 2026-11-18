@@ -130,7 +130,7 @@ class WeChatChannel:
             self.runtime.task = asyncio.create_task(run(), name="novel-wechat-ilink")
         return self.state()
 
-    async def disconnect(self) -> None:
+    async def disconnect(self, *, forget_credentials: bool = True) -> None:
         runtime = self.runtime
         self.runtime = WeChatRuntime(status=WeChatStatus(status="idle", has_credentials=self.credential_path.is_file()))
         if runtime.task and not runtime.task.done():
@@ -155,6 +155,14 @@ class WeChatChannel:
                         await result
                 except Exception:
                     logger.debug("WECHAT_CLOSE_FAILED", exc_info=True)
+        # 凭证存在时 SDK 会在下一次 login()（以及应用启动恢复）中直接复用登录，
+        # 导致“断开”或“重新出码”看起来又自动连接。手动断开就是登出，因此删除它。
+        if forget_credentials:
+            try:
+                self.credential_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("WECHAT_CREDENTIAL_REMOVE_FAILED", exc_info=True)
+        self.runtime.status.has_credentials = self.credential_path.is_file()
 
     def _on_qr(self, content: str) -> None:
         self.runtime.status.status = "pending"
