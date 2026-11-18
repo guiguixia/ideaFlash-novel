@@ -879,6 +879,14 @@ async def session_reset(work_id:str,session_id:str,current_user:CurrentUser=Depe
  opening,model,blocks,mood,suggestions=await run_in_interactive_llm_worker(generate_session_opening,x.id)
  x.history=[{"role":"assistant","content":opening,"blocks":blocks,"model":model,"mood":mood,"suggestions":suggestions}];x.turn=0;x.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(x)
  return out(sess(x,True),"体验已重置")
+@app.post("/api/works/{work_id}/sessions/{session_id}/undo-last-turn")
+def session_undo_last_turn(work_id:str,session_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);x=db.query(models.ExperienceSession).filter_by(id=session_id,work_id=w.id,status="active").first()
+ if not x:raise HTTPException(404,"进行中的体验不存在")
+ history=list(x.history or [])
+ if len(history)<3 or history[-2].get("role")!="user" or history[-1].get("role")!="assistant" or not history[-1].get("content") or history[-1].get("status")=="generating":raise HTTPException(409,"当前没有可以回退的完整一轮回复")
+ history=history[:-2];state=dict(x.state or {});state["sceneImageArchive"]=[item for item in (state.get("sceneImageArchive") or []) if item.get("turn")!=x.turn];x.history=history;x.state=state;x.turn=max(0,x.turn-1);x.updated_at=datetime.now(timezone.utc);db.commit();db.refresh(x)
+ return out(sess(x,True),"已回退本轮回复")
 @app.post("/api/works/{work_id}/sessions/{session_id}/scene-image")
 async def session_scene_image(work_id:str,session_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);x=db.query(models.ExperienceSession).filter_by(id=session_id,work_id=w.id,status="active").first()

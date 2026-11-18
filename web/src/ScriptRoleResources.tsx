@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ImagePlus } from "lucide-react";
+import { Download, ImagePlus } from "lucide-react";
 import { kernelGet, kernelPost, kernelUpload, kernelUrl } from "./lib/kernel-api";
 
 type Script = {
@@ -49,6 +49,7 @@ export function ScriptRoleResources({
   const [target, setTarget] = useState<{ resourceId: string; slot: string; custom: boolean } | null>(null);
   const [customName, setCustomName] = useState("");
   const [customDescription, setCustomDescription] = useState("");
+  const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -193,7 +194,7 @@ export function ScriptRoleResources({
                   <div key={slot.id} className="flex h-20 items-center gap-3 rounded-lg border border-border bg-workspace/40 p-3">
                     <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-lg border border-border bg-card text-muted-foreground">
                       {slot.imagePath ? (
-                        <img src={kernelUrl(slot.imagePath)} alt={`${managingResource.name}${slot.label}形象`} className="h-full w-full object-cover" />
+                        <button type="button" onClick={() => setPreview({ url: slot.imagePath || "", title: `${managingResource.name} · ${slot.label}` })} className="h-full w-full"><img src={kernelUrl(slot.imagePath)} alt={`${managingResource.name}${slot.label}形象`} className="h-full w-full object-cover" /></button>
                       ) : (
                         <ImagePlus size={16} />
                       )}
@@ -202,9 +203,12 @@ export function ScriptRoleResources({
                       <p className="text-sm font-medium">{slot.label}</p>
                       <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{slot.custom ? managingResource.customEmotions.find((item) => item.id === slot.id)?.description || "自定义状态" : slot.imagePath ? "已配置" : "未配置"}</p>
                     </div>
-                    <button type="button" onClick={() => selectImage(managingResource.id, slot.id, slot.custom)} className="shrink-0 rounded-md border border-brand-border px-2 py-1 text-xs font-medium text-brand hover:bg-brand-soft">
-                      {slot.imagePath ? "替换" : "上传"}
-                    </button>
+                    <div className="flex shrink-0 gap-1">
+                      {slot.imagePath && <a href={kernelUrl(slot.imagePath)} download={`${managingResource.name}-${slot.label}`} title={`下载${slot.label}形象`} className="rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-hover"><Download className="size-3" /></a>}
+                      <button type="button" onClick={() => selectImage(managingResource.id, slot.id, slot.custom)} className="rounded-md border border-brand-border px-2 py-1 text-xs font-medium text-brand hover:bg-brand-soft">
+                        {slot.imagePath ? "替换" : "上传"}
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -223,6 +227,7 @@ export function ScriptRoleResources({
         </div>
       )}
 
+      {preview && <div className="fixed inset-0 z-[60] grid place-items-center bg-foreground/70 p-6" onMouseDown={() => setPreview(null)}><figure className="max-h-full max-w-full" onMouseDown={(event) => event.stopPropagation()}><img src={kernelUrl(preview.url)} alt={preview.title} className="max-h-[82vh] max-w-[82vw] rounded-xl bg-workspace object-contain shadow-2xl" /><figcaption className="mt-3 text-center text-sm text-white">{preview.title} · 点击空白处关闭</figcaption></figure></div>}
       <input
         ref={input}
         type="file"

@@ -560,6 +560,16 @@ function Experience({
     } catch (err) { setError(message(err)); }
     finally { setGeneratingScene(false); }
   }
+  async function undoLastTurn() {
+    if (!session || busy || isGenerating) return;
+    if (!window.confirm("回退上一轮输入及对应的剧情回复？此操作只影响最近一轮。")) return;
+    setBusy(true);setError("");
+    try {
+      setSession(await kernelPost<Session>(`/api/works/${work.id}/sessions/${session.id}/undo-last-turn`, {}));
+      await reload();
+    } catch (err) { setError(message(err)); }
+    finally { setBusy(false); }
+  }
   function beginRename(item: Session) {
     setEditingSessionId(item.id);
     setEditingTitle(item.title);
@@ -889,13 +899,13 @@ function Experience({
                   </div>
                   {item.role === "assistant" &&
                   index === (session.history?.length || 0) - 1 &&
-                  item.suggestions?.length ? (
+                  (item.suggestions?.length || ((session.history?.length || 0) >= 3 && session.history?.at(-2)?.role === "user")) ? (
                     <div className="mt-2 rounded-xl border border-dashed bg-workspace p-3">
                       <p className="text-xs font-medium text-muted-foreground">
                         你可以这样推进
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
-                        {item.suggestions.map((suggestion) => (
+                        {(item.suggestions || []).map((suggestion) => (
                           <button
                             key={suggestion}
                             type="button"
@@ -906,6 +916,7 @@ function Experience({
                             {suggestion}
                           </button>
                         ))}
+                        {(session.history?.length || 0) >= 3 && session.history?.at(-2)?.role === "user" && <button type="button" onClick={() => void undoLastTurn()} disabled={busy || isGenerating} className="rounded-full border border-destructive/30 bg-destructive/5 px-3 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50">回退本轮回复</button>}
                       </div>
                     </div>
                   ) : null}
