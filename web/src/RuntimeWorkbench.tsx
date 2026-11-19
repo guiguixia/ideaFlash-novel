@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeft, Bot, QrCode, Settings } from "lucide-react";
+import { ArrowLeft, Bot, QrCode, Settings, Trash2 } from "lucide-react";
 import {
+  kernelDelete,
   kernelGet,
   kernelPatch,
   kernelPost,
@@ -589,6 +590,14 @@ function Experience({
       setError(message(err));
     }
   }
+  async function deleteSession(item: Session) {
+    if (!window.confirm(`删除体验记录「${item.title}」吗？此操作无法恢复。`)) return;
+    try {
+      await kernelDelete(`/api/works/${work.id}/sessions/${item.id}`);
+      if (session?.id === item.id) setSession(null);
+      await reload();
+    } catch (err) { setError(message(err)); }
+  }
   async function send(event: FormEvent) {
     event.preventDefault();
     if (!session || !input.trim() || busy || isGenerating) return;
@@ -755,7 +764,7 @@ function Experience({
         {roleSessions.map((item) => (
           <div
             key={item.id}
-            className={`mt-2 flex rounded-lg text-xs ${session?.id === item.id ? "bg-active font-medium" : "hover:bg-hover"}`}
+            className={`mt-2 flex items-center rounded-lg text-xs ${session?.id === item.id ? "bg-active font-medium" : "hover:bg-hover"}`}
           >
             {editingSessionId === item.id ? (
               <input
@@ -784,6 +793,7 @@ function Experience({
                 {item.title} · 第{item.turn}轮
               </button>
             )}
+            <button type="button" title={`删除${item.title}`} onClick={() => void deleteSession(item)} className="mr-1 rounded p-1 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"><Trash2 className="size-3" /></button>
           </div>
         ))}
       </aside>

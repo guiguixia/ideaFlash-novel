@@ -104,6 +104,10 @@ def normalize_story_reply(raw:str):
  choices=[];choice_match=CHOICES_BLOCK_RE.search(text)
  if choice_match:
   choices=parse_story_suggestions(choice_match.group(1));text=text[:choice_match.start()].rstrip()
+ elif CHOICES_START in text:
+  # 部分模型会漏掉结束标记 [/choices]。开场不能因此把协议原文展示给用户；
+  # 将 choices 起始标记之后的内容按建议解析，并保留此前的剧情正文。
+  choice_start=text.find(CHOICES_START);choices=parse_story_suggestions(text[choice_start+len(CHOICES_START):]);text=text[:choice_start].rstrip()
  blocks,content=parse_story_blocks(text)
  return content,blocks,mood,choices
 def custom_emotions(card):return [item for item in (card.custom_emotions or []) if isinstance(item,dict) and item.get("id")]
@@ -211,6 +215,10 @@ def save_script_opening_cache(script,player,payload):
  snapshot=dict(script.snapshot or {});cache=dict(snapshot.get("canonicalOpenings") or {})
  cache[player]={"content":content,"model":model,"blocks":blocks,"mood":mood,"suggestions":suggestions}
  snapshot["canonicalOpenings"]=cache;script.snapshot=snapshot
+def clear_script_opening_cache(script,player):
+ snapshot=dict(script.snapshot or {});cache=dict(snapshot.get("canonicalOpenings") or {})
+ if player in cache:
+  cache.pop(player,None);snapshot["canonicalOpenings"]=cache;script.snapshot=snapshot
 
 async def generate_session_opening(session_id:str):
  db=SessionLocal()
@@ -869,6 +877,13 @@ def session_update(work_id:str,session_id:str,body:ExperienceSessionUpdateReques
  ensure_experience_session_title_available(db,x.script_id,title,exclude_id=x.id)
  x.title=title;db.commit();db.refresh(x)
  return out(sess(x,True),"体验名称已更新")
+@app.delete("/api/works/{work_id}/sessions/{session_id}")
+def session_delete(work_id:str,session_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
+ w=owned(db,work_id,current_user);x=db.query(models.ExperienceSession).filter_by(id=session_id,work_id=w.id).first()
+ if not x:raise HTTPException(404,"体验记录不存在")
+ script=db.query(models.ExperienceScript).filter_by(id=x.script_id,work_id=w.id).first();player=str((x.state or {}).get("playerIdentity") or (script.player_identity if script else "") or "一名进入故事的旅人")
+ if script:clear_script_opening_cache(script,player)
+ db.delete(x);db.commit();return out({"id":session_id},"体验记录已删除")
 @app.post("/api/works/{work_id}/sessions/{session_id}/reset")
 async def session_reset(work_id:str,session_id:str,current_user:CurrentUser=Depends(get_current_user),db:Session=Depends(get_db)):
  w=owned(db,work_id,current_user);x=db.query(models.ExperienceSession).filter_by(id=session_id,work_id=w.id,status="active").first()
